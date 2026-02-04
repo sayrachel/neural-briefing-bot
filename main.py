@@ -531,7 +531,7 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     try:
         print("Available Gemini models:")
         for m in genai.list_models():
-            if "generateContent" in [method.name for method in m.supported_generation_methods]:
+            if "generateContent" in m.supported_generation_methods:
                 print(f"  - {m.name}")
     except Exception as e:
         print(f"Could not list models: {e}")
