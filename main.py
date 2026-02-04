@@ -36,7 +36,7 @@ USERS_FILE = Path(__file__).parent / "users.json"
 
 # Quality-based ranking configuration
 MIN_ARTICLES = 3
-MAX_ARTICLES = 10
+MAX_ARTICLES = 4
 MIN_QUALITY_SCORE = 1.3  # Minimum score to include an article (filters out marginal stories)
 
 # Source reputation weights (higher = more credible/in-depth)
@@ -66,8 +66,15 @@ HIGH_IMPORTANCE_KEYWORDS = [
 
 # Keywords that indicate lower-value articles
 LOW_VALUE_KEYWORDS = [
+    # Existing
     "rumor", "might", "could", "speculation", "opinion",
     "podcast", "vergecast", "review",
+    # Personal/blog style
+    "vibe", "vibes", "feel good", "hot take", "rant",
+    "coffee break", "unpopular opinion",
+    # Minor incidents
+    "brief outage", "short outage", "minute outage", "minutes down",
+    "quickly restored", "back online",
 ]
 
 # Time mappings for natural language
@@ -454,6 +461,11 @@ def score_article(article: dict) -> float:
         if keyword.lower() in text:
             score -= 0.3
 
+    # Penalty for first-person articles (opinion/blog posts)
+    title_lower = article.get("title", "").lower()
+    if title_lower.startswith("i ") or " i " in title_lower[:30]:
+        score -= 0.5
+
     return max(score, 0)  # Don't go negative
 
 
@@ -589,6 +601,12 @@ Write exactly {article_count} takeaways. Separate each with "---" on its own lin
 
         except Exception as e:
             print(f"Gemini API error (attempt {attempt + 1}): {e}")
+            # Handle rate limiting with longer delay
+            if "429" in str(e) or "quota" in str(e).lower():
+                print("Rate limited, waiting 60s...")
+                import time
+                time.sleep(60)
+                continue
             if attempt == 0:
                 print("Retrying...")
                 continue
