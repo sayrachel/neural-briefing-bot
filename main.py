@@ -301,7 +301,7 @@ def handle_messages(token: str) -> None:
             # New user or restart
             send_telegram_message(
                 token, chat_id,
-                "Welcome to the AI News Bot! I'll send you a daily summary of the top AI news.\n\n"
+                "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news.\n\n"
                 "What time would you like to receive your digest? "
                 "Please also include your timezone. If you don't specify, I'll use 9am PST."
             )
@@ -361,7 +361,7 @@ def handle_messages(token: str) -> None:
                 token, chat_id,
                 f"You'll receive your daily AI news digest at <b>{friendly_time}</b> ({friendly_tz}).\n\n"
                 "Commands:\n"
-                "/summary - Get today's summary now\n"
+                "/summary - Generate summary now\n"
                 "/time - Change delivery time\n"
                 "/stop - Unsubscribe"
             )
@@ -381,7 +381,7 @@ def handle_messages(token: str) -> None:
                 token, chat_id,
                 f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
                 "Commands:\n"
-                "/summary - Get today's summary now\n"
+                "/summary - Generate summary now\n"
                 "/time - Change delivery time\n"
                 "/stop - Unsubscribe"
             )
@@ -720,7 +720,7 @@ def process_webhook_update(update: dict) -> None:
     if text == "/start":
         send_telegram_message(
             telegram_token, chat_id,
-            "Welcome to the AI News Bot! I'll send you a daily summary of the top AI news.\n\n"
+            "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news.\n\n"
             "What time would you like to receive your digest? "
             "Please also include your timezone. If you don't specify, I'll use 9am PST."
         )
@@ -779,6 +779,7 @@ def process_webhook_update(update: dict) -> None:
             telegram_token, chat_id,
             f"You'll receive your daily AI news digest at <b>{friendly_time}</b> ({friendly_tz}).\n\n"
             "Commands:\n"
+            "/summary - Generate summary now\n"
             "/time - Change delivery time\n"
             "/stop - Unsubscribe"
         )
@@ -796,6 +797,7 @@ def process_webhook_update(update: dict) -> None:
             telegram_token, chat_id,
             f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
             "Commands:\n"
+            "/summary - Generate summary now\n"
             "/time - Change delivery time\n"
             "/stop - Unsubscribe"
         )
