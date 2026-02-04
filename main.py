@@ -526,7 +526,7 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
         return ""
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-pro")
 
     # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
