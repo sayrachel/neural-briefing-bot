@@ -25,7 +25,6 @@ RSS_FEEDS = [
     ("The Verge", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
     ("MIT Tech Review", "https://www.technologyreview.com/topic/artificial-intelligence/feed"),
     ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/technology-lab"),
-    ("Karpathy", "https://karpathy.bearblog.dev/feed/"),
 ]
 
 HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
@@ -42,7 +41,6 @@ MIN_QUALITY_SCORE = 1.3  # Minimum score to include an article (filters out marg
 
 # Source reputation weights (higher = more credible/in-depth)
 SOURCE_WEIGHTS = {
-    "Karpathy": 1.5,           # High-value original content from AI thought leader
     "MIT Tech Review": 1.5,    # Deep, research-focused
     "Ars Technica": 1.3,       # Technical depth
     "The Verge": 1.0,          # Solid general coverage
