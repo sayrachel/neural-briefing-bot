@@ -536,8 +536,8 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     except Exception as e:
         print(f"Could not list models: {e}")
 
-    # Use gemini-1.5-flash-8b (optimized for free tier)
-    model = genai.GenerativeModel("gemini-1.5-flash-8b")
+    # Use gemini-2.0-flash-lite (available on free tier)
+    model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
     # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
