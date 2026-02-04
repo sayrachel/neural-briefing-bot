@@ -526,7 +526,18 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
         return ""
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+
+    # Log available models for debugging
+    try:
+        print("Available Gemini models:")
+        for m in genai.list_models():
+            if "generateContent" in [method.name for method in m.supported_generation_methods]:
+                print(f"  - {m.name}")
+    except Exception as e:
+        print(f"Could not list models: {e}")
+
+    # Use gemini-1.5-flash-8b (optimized for free tier)
+    model = genai.GenerativeModel("gemini-1.5-flash-8b")
 
     # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
