@@ -402,7 +402,7 @@ def deduplicate_articles(articles: list[dict]) -> list[dict]:
 
 
 def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
-    """Use Gemini to create a concise news briefing."""
+    """Use Gemini to create insightful news summaries."""
     if not articles:
         return ""
 
@@ -411,46 +411,51 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
 
     articles_text = "\n\n".join([
         f"Title: {a['title']}\nSource: {a['source']}\nSummary: {a['summary']}"
-        for a in articles[:10]
+        for a in articles[:6]
     ])
 
-    prompt = f"""You are an AI news curator. Create a brief, engaging summary of these AI news stories.
+    prompt = f"""You are an AI news analyst writing a daily briefing. For each story, write a 2-3 sentence summary that:
 
-For each story, write a single compelling sentence (max 15 words) that captures the key point.
+1. Explains WHAT happened and WHY it matters
+2. Includes the key takeaway or implication for the industry
+3. Uses a notable quote from the article if it adds value (not required)
+
+The reader should understand the significance of each story without clicking through.
 
 Articles:
 {articles_text}
 
-Format your response as a simple list with one line per story. Just the summary sentences, nothing else.
-Keep it concise and newsworthy. Maximum 8 stories."""
+Format: Write each summary as a paragraph. Separate stories with "---" on its own line.
+Be substantive but concise. Maximum 6 stories."""
 
     try:
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         print(f"Gemini API error: {e}")
-        return "\n".join([f"• {a['title']}" for a in articles[:8]])
+        return "\n---\n".join([a['title'] for a in articles[:6]])
 
 
 def format_telegram_message(articles: list[dict], summaries: str) -> str:
     """Format the final Telegram message."""
     today = datetime.now().strftime("%b %d, %Y")
-    summary_lines = [s.strip() for s in summaries.split("\n") if s.strip()]
 
-    message_parts = ["<b>AI News Digest</b>\n"]
+    # Split summaries by --- separator
+    summary_blocks = [s.strip() for s in summaries.split("---") if s.strip()]
 
-    for i, article in enumerate(articles[:8]):
-        if i < len(summary_lines):
-            summary = summary_lines[i].lstrip("•-123456789. ")
+    message_parts = [f"<b>AI News Digest</b> - {today}\n"]
+
+    for i, article in enumerate(articles[:6]):
+        if i < len(summary_blocks):
+            summary = summary_blocks[i]
         else:
             summary = article["title"]
 
         message_parts.append(
-            f"• {summary}\n"
-            f"  <a href=\"{article['link']}\">{article['source']}</a>\n"
+            f"<b>{i+1}. {article['title'][:60]}{'...' if len(article['title']) > 60 else ''}</b>\n"
+            f"{summary}\n"
+            f"<a href=\"{article['link']}\">Read more ({article['source']})</a>\n"
         )
-
-    message_parts.append(f"\n{today} | {len(articles[:8])} stories")
 
     return "\n".join(message_parts)
 
