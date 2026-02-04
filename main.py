@@ -32,6 +32,8 @@ HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
 SIMILARITY_THRESHOLD = 0.7
 DIVERSITY_THRESHOLD = 0.4  # Stricter threshold for final article selection (catches same-story coverage)
 USERS_FILE = Path(__file__).parent / "users.json"
+CACHE_FILE = Path(__file__).parent / "summary_cache.json"
+CACHE_TTL = 3600  # 1 hour in seconds
 
 # Quality-based ranking configuration
 MIN_ARTICLES = 3
@@ -195,6 +197,50 @@ def save_users(users: dict) -> None:
     USERS_FILE.write_text(json.dumps(users, indent=2))
 
 
+def get_articles_hash(articles: list[dict]) -> str:
+    """Generate a hash of article titles to use as cache key."""
+    titles = sorted([a.get("title", "") for a in articles])
+    return hashlib.md5("".join(titles).encode()).hexdigest()
+
+
+def get_cached_summary(articles: list[dict]) -> str | None:
+    """Return cached summary if valid, else None."""
+    if not CACHE_FILE.exists():
+        return None
+
+    try:
+        cache = json.loads(CACHE_FILE.read_text())
+        cached_time = cache.get("timestamp", 0)
+        cached_hash = cache.get("articles_hash", "")
+        cached_summary = cache.get("summary", "")
+
+        # Check if cache is still valid (within TTL and same articles)
+        current_hash = get_articles_hash(articles)
+        if (datetime.now(timezone.utc).timestamp() - cached_time < CACHE_TTL
+                and cached_hash == current_hash
+                and cached_summary):
+            print("Using cached summary")
+            return cached_summary
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Cache read error: {e}")
+
+    return None
+
+
+def save_summary_cache(articles: list[dict], summary: str) -> None:
+    """Save summary to cache with timestamp and article hash."""
+    cache = {
+        "timestamp": datetime.now(timezone.utc).timestamp(),
+        "articles_hash": get_articles_hash(articles),
+        "summary": summary,
+    }
+    try:
+        CACHE_FILE.write_text(json.dumps(cache, indent=2))
+        print("Summary cached")
+    except Exception as e:
+        print(f"Cache write error: {e}")
+
+
 def parse_time_preference(text: str) -> tuple[str, str, str, str]:
     """
     Parse user's time preference and timezone from natural language.
@@ -337,7 +383,11 @@ def handle_messages(token: str) -> None:
                 articles = fetch_recent_articles()
                 if articles:
                     articles = rank_and_filter_articles(articles)
-                    summaries = summarize_with_gemini(articles, gemini_api_key)
+                    # Check cache first
+                    summaries = get_cached_summary(articles)
+                    if not summaries:
+                        summaries = summarize_with_gemini(articles, gemini_api_key)
+                        save_summary_cache(articles, summaries)
                     message = format_telegram_message(articles, summaries)
                     send_telegram_message(token, chat_id, message)
                 else:
@@ -536,15 +586,6 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
         return ""
 
     genai.configure(api_key=api_key)
-
-    # Log available models for debugging
-    try:
-        print("Available Gemini models:")
-        for m in genai.list_models():
-            if "generateContent" in m.supported_generation_methods:
-                print(f"  - {m.name}")
-    except Exception as e:
-        print(f"Could not list models: {e}")
 
     # Use gemini-2.0-flash-lite (available on free tier)
     model = genai.GenerativeModel("gemini-2.0-flash-lite")
@@ -777,7 +818,11 @@ def process_webhook_update(update: dict) -> None:
             articles = fetch_recent_articles()
             if articles:
                 articles = rank_and_filter_articles(articles)
-                summaries = summarize_with_gemini(articles, gemini_api_key)
+                # Check cache first
+                summaries = get_cached_summary(articles)
+                if not summaries:
+                    summaries = summarize_with_gemini(articles, gemini_api_key)
+                    save_summary_cache(articles, summaries)
                 message = format_telegram_message(articles, summaries)
                 send_telegram_message(telegram_token, chat_id, message)
             else:
