@@ -660,14 +660,22 @@ Write exactly {article_count} takeaways. Separate each with "---" on its own lin
         try:
             response = model.generate_content(prompt)
 
-            # Validate response
-            if not response.text:
+            # Validate response - accessing .text can raise if blocked
+            try:
+                response_text = response.text
+            except (ValueError, AttributeError) as e:
+                print(f"Could not get response text (attempt {attempt + 1}): {e}")
+                if attempt == 0:
+                    continue
+                return fallback
+
+            if not response_text:
                 print(f"Gemini returned empty response (attempt {attempt + 1})")
                 if attempt == 0:
                     continue
                 return fallback
 
-            summary_text = response.text.strip()
+            summary_text = response_text.strip()
 
             # Check if response is too short (likely an error)
             if len(summary_text) < 100:
@@ -685,12 +693,10 @@ Write exactly {article_count} takeaways. Separate each with "---" on its own lin
 
         except Exception as e:
             print(f"Gemini API error (attempt {attempt + 1}): {e}")
-            # Handle rate limiting with longer delay
+            # Handle rate limiting - don't retry, just fall back immediately
             if "429" in str(e) or "quota" in str(e).lower():
-                print("Rate limited, waiting 60s...")
-                import time
-                time.sleep(60)
-                continue
+                print("Rate limited, falling back to titles")
+                return fallback
             if attempt == 0:
                 print("Retrying...")
                 continue
