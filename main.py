@@ -273,7 +273,7 @@ def handle_messages(token: str) -> None:
                 "- Ars Technica\n"
                 "- Wired\n\n"
                 "What time would you like to receive your daily digest? "
-                "Please also include your timezone, otherwise I'll use Pacific Time (PST)."
+                "Please also include your timezone. If you don't specify, I'll use 9am PST."
             )
             users[chat_id] = {"state": "awaiting_time"}
 
@@ -290,7 +290,7 @@ def handle_messages(token: str) -> None:
             send_telegram_message(
                 token, chat_id,
                 "What time would you like to receive your daily digest? "
-                "Please also include your timezone, otherwise I'll use Pacific Time (PST)."
+                "Please also include your timezone. If you don't specify, I'll use 9am PST."
             )
             users[chat_id] = {**user, "state": "awaiting_time"}
 
