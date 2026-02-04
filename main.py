@@ -506,22 +506,195 @@ def send_digests(token: str, gemini_key: str) -> None:
 
 
 def main():
-    """Main bot execution."""
-    print(f"AI News Bot - {datetime.now(timezone.utc).isoformat()}")
+    """Main bot execution - runs continuously."""
+    import time
+
+    print(f"AI News Bot starting - {datetime.now(timezone.utc).isoformat()}")
 
     telegram_token = get_env_var("TELEGRAM_TOKEN")
     gemini_api_key = get_env_var("GEMINI_API_KEY")
 
-    # Step 1: Handle incoming messages
-    print("Checking for new messages...")
-    handle_messages(telegram_token)
+    last_digest_hour = None
 
-    # Step 2: Send scheduled digests
-    print("Checking for scheduled digests...")
-    send_digests(telegram_token, gemini_api_key)
+    while True:
+        try:
+            # Check for new messages every loop (responds immediately)
+            handle_messages(telegram_token)
 
-    print("Done!")
+            # Check for scheduled digests once per hour
+            current_hour = datetime.now(timezone.utc).hour
+            if current_hour != last_digest_hour:
+                print(f"Checking for scheduled digests... (hour {current_hour})")
+                send_digests(telegram_token, gemini_api_key)
+                last_digest_hour = current_hour
+
+            # Wait 5 seconds before checking again
+            time.sleep(5)
+
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+            time.sleep(10)  # Wait a bit longer on error
+
+
+# ============ Flask Web App for Webhooks ============
+
+from flask import Flask, request
+
+app = Flask(__name__)
+
+
+def process_webhook_update(update: dict) -> None:
+    """Process a single update from Telegram webhook."""
+    telegram_token = get_env_var("TELEGRAM_TOKEN")
+    users = load_users()
+
+    if "message" not in update:
+        return
+
+    message = update["message"]
+    chat_id = str(message["chat"]["id"])
+    text = message.get("text", "").strip()
+
+    user = users.get(chat_id, {"state": "new"})
+
+    if text == "/start":
+        send_telegram_message(
+            telegram_token, chat_id,
+            "Welcome to the AI News Bot!\n\n"
+            "I'll send you a daily digest of the latest AI news from:\n"
+            "- TechCrunch\n"
+            "- The Verge\n"
+            "- VentureBeat\n"
+            "- MIT Technology Review\n"
+            "- Ars Technica\n"
+            "- Wired\n\n"
+            "What time would you like to receive your daily digest? "
+            "Please also include your timezone, otherwise I'll use Pacific Time (PST)."
+        )
+        users[chat_id] = {"state": "awaiting_time"}
+
+    elif text == "/stop":
+        if chat_id in users:
+            del users[chat_id]
+        send_telegram_message(
+            telegram_token, chat_id,
+            "You've been unsubscribed. Send /start to subscribe again."
+        )
+
+    elif text == "/time":
+        send_telegram_message(
+            telegram_token, chat_id,
+            "What time would you like to receive your daily digest? "
+            "Please also include your timezone, otherwise I'll use Pacific Time (PST)."
+        )
+        users[chat_id] = {**user, "state": "awaiting_time"}
+
+    elif user.get("state") == "awaiting_time":
+        time_24h, friendly_time, iana_tz, friendly_tz = parse_time_preference(text)
+
+        if time_24h:
+            users[chat_id] = {
+                "state": "subscribed",
+                "time": time_24h,
+                "timezone": iana_tz,
+                "subscribed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            send_telegram_message(
+                telegram_token, chat_id,
+                f"You'll receive your daily AI news digest at <b>{friendly_time}</b> ({friendly_tz}).\n\n"
+                "Commands:\n"
+                "/time - Change delivery time\n"
+                "/stop - Unsubscribe"
+            )
+        else:
+            send_telegram_message(
+                telegram_token, chat_id,
+                "I didn't understand that time. Please try again.\n"
+                "Examples: \"9am\", \"9am PST\", \"morning\", \"14:00 EST\", \"6:30pm\""
+            )
+
+    elif user.get("state") == "subscribed":
+        time_24h = user.get("time", "09:00")
+        user_tz = user.get("timezone", "America/Los_Angeles")
+        hour = int(time_24h.split(":")[0])
+        friendly = format_friendly_time(hour)
+        tz_friendly = next(
+            (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
+            user_tz
+        )
+        send_telegram_message(
+            telegram_token, chat_id,
+            f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
+            "Commands:\n"
+            "/time - Change delivery time\n"
+            "/stop - Unsubscribe"
+        )
+
+    save_users(users)
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Handle incoming Telegram webhook updates."""
+    try:
+        update = request.get_json()
+        if update:
+            process_webhook_update(update)
+    except Exception as e:
+        print(f"Webhook error: {e}")
+    return "OK", 200
+
+
+@app.route("/cron/digest", methods=["GET", "POST"])
+def cron_digest():
+    """Endpoint for scheduled digest sending (called by external cron service)."""
+    try:
+        telegram_token = get_env_var("TELEGRAM_TOKEN")
+        gemini_api_key = get_env_var("GEMINI_API_KEY")
+        send_digests(telegram_token, gemini_api_key)
+        return "Digests sent", 200
+    except Exception as e:
+        print(f"Cron digest error: {e}")
+        return f"Error: {e}", 500
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check endpoint."""
+    return "OK", 200
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Root endpoint."""
+    return "AI News Bot is running!", 200
+
+
+def setup_webhook():
+    """Set up Telegram webhook (run once after deployment)."""
+    telegram_token = get_env_var("TELEGRAM_TOKEN")
+    webhook_url = os.environ.get("WEBHOOK_URL")
+
+    if not webhook_url:
+        print("WEBHOOK_URL not set, skipping webhook setup")
+        return False
+
+    url = f"https://api.telegram.org/bot{telegram_token}/setWebhook"
+    response = requests.post(url, json={"url": f"{webhook_url}/webhook"})
+    print(f"Webhook setup response: {response.json()}")
+    return response.ok
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "setup-webhook":
+        # Run: python main.py setup-webhook
+        setup_webhook()
+    elif len(sys.argv) > 1 and sys.argv[1] == "polling":
+        # Run: python main.py polling (for local testing)
+        main()
+    else:
+        # Default: run Flask app (for production with gunicorn)
+        port = int(os.environ.get("PORT", 5000))
+        app.run(host="0.0.0.0", port=port)
