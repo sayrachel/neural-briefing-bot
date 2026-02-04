@@ -31,7 +31,42 @@ RSS_FEEDS = [
 
 HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
 SIMILARITY_THRESHOLD = 0.7
+DIVERSITY_THRESHOLD = 0.5  # Stricter threshold for final article selection
 USERS_FILE = Path(__file__).parent / "users.json"
+
+# Quality-based ranking configuration
+MIN_ARTICLES = 3
+MAX_ARTICLES = 10
+MIN_QUALITY_SCORE = 1.0  # Minimum score to include an article
+
+# Source reputation weights (higher = more credible/in-depth)
+SOURCE_WEIGHTS = {
+    "MIT Tech Review": 1.5,    # Deep, research-focused
+    "Ars Technica": 1.3,       # Technical depth
+    "The Verge": 1.0,          # Solid general coverage
+    "VentureBeat": 1.0,        # Good AI coverage
+    "TechCrunch": 0.9,         # Sometimes clickbaity
+    "Wired": 0.9,              # Variable quality
+}
+
+# Keywords that indicate high-importance articles
+HIGH_IMPORTANCE_KEYWORDS = [
+    # Event types
+    "breakthrough", "announces", "launches", "acquisition",
+    "funding", "billion", "million", "regulation", "lawsuit",
+    "open source", "safety", "partnership", "research", "paper", "study",
+    # Major AI products/companies
+    "GPT", "Claude", "Gemini", "OpenAI", "Anthropic", "DeepMind", "Meta AI",
+    # Influential figures
+    "Sam Altman", "Dario Amodei", "Daniela Amodei", "Demis Hassabis",
+    "Yann LeCun", "Fei-Fei Li", "Jensen Huang", "Satya Nadella",
+    "Sundar Pichai", "Elon Musk", "Ilya Sutskever", "Andrej Karpathy",
+]
+
+# Keywords that indicate lower-value articles
+LOW_VALUE_KEYWORDS = [
+    "rumor", "might", "could", "speculation", "opinion",
+]
 
 # Time mappings for natural language
 TIME_MAPPINGS = {
@@ -376,12 +411,42 @@ def fetch_recent_articles(hours: int = HOURS_LOOKBACK) -> list[dict]:
     return articles
 
 
-def deduplicate_articles(articles: list[dict]) -> list[dict]:
+def score_article(article: dict) -> float:
+    """
+    Calculate a quality score for an article based on:
+    - Source reputation
+    - Presence of high-importance keywords
+    - Absence of low-value keywords
+
+    Returns a score where higher = more important.
+    """
+    # Base score from source reputation (default 1.0 for unknown sources)
+    source = article.get("source", "")
+    score = SOURCE_WEIGHTS.get(source, 1.0)
+
+    # Combine title and summary for keyword matching
+    text = (article.get("title", "") + " " + article.get("summary", "")).lower()
+
+    # Boost for high-importance keywords (each keyword adds 0.2)
+    keyword_boost = 0
+    for keyword in HIGH_IMPORTANCE_KEYWORDS:
+        if keyword.lower() in text:
+            keyword_boost += 0.2
+    # Cap keyword boost at 1.0 to prevent runaway scores
+    score += min(keyword_boost, 1.0)
+
+    # Penalty for low-value keywords (each reduces score by 0.3)
+    for keyword in LOW_VALUE_KEYWORDS:
+        if keyword.lower() in text:
+            score -= 0.3
+
+    return max(score, 0)  # Don't go negative
+
+
+def deduplicate_articles(articles: list[dict], threshold: float = SIMILARITY_THRESHOLD) -> list[dict]:
     """Remove duplicate articles based on title similarity."""
     if not articles:
         return []
-
-    articles.sort(key=lambda x: x["published"], reverse=True)
 
     unique = []
     for article in articles:
@@ -392,13 +457,53 @@ def deduplicate_articles(articles: list[dict]) -> list[dict]:
                 article["title"].lower(),
                 existing["title"].lower()
             ).ratio()
-            if similarity > SIMILARITY_THRESHOLD:
+            if similarity > threshold:
                 is_duplicate = True
                 break
         if not is_duplicate:
             unique.append(article)
 
     return unique
+
+
+def rank_and_filter_articles(articles: list[dict]) -> list[dict]:
+    """
+    Rank articles by quality score and filter to return only high-value articles.
+
+    Returns 3-10 articles based on quality thresholds, ensuring diversity.
+    """
+    if not articles:
+        return []
+
+    # First pass: basic deduplication with standard threshold
+    articles = deduplicate_articles(articles, SIMILARITY_THRESHOLD)
+
+    # Score all articles
+    for article in articles:
+        article["_score"] = score_article(article)
+
+    # Sort by score (highest first), not by recency
+    articles.sort(key=lambda x: x["_score"], reverse=True)
+
+    # Filter by minimum quality threshold
+    quality_articles = [a for a in articles if a["_score"] >= MIN_QUALITY_SCORE]
+
+    # If we don't have enough quality articles, take top articles anyway
+    if len(quality_articles) < MIN_ARTICLES:
+        quality_articles = articles[:MIN_ARTICLES]
+
+    # Apply stricter diversity check to avoid similar topics in final selection
+    diverse_articles = deduplicate_articles(quality_articles, DIVERSITY_THRESHOLD)
+
+    # Cap at maximum
+    final_articles = diverse_articles[:MAX_ARTICLES]
+
+    # Clean up internal score field before returning
+    for article in final_articles:
+        if "_score" in article:
+            del article["_score"]
+
+    return final_articles
 
 
 def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
@@ -409,11 +514,13 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
+    # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
         f"Title: {a['title']}\nSource: {a['source']}\nSummary: {a['summary']}"
-        for a in articles[:6]
+        for a in articles
     ])
 
+    article_count = len(articles)
     prompt = f"""You are an AI news analyst writing a daily briefing. For each story, write a 2-3 sentence summary that:
 
 1. Explains WHAT happened and WHY it matters
@@ -426,14 +533,14 @@ Articles:
 {articles_text}
 
 Format: Write each summary as a paragraph. Separate stories with "---" on its own line.
-Be substantive but concise. Maximum 6 stories."""
+Be substantive but concise. Summarize all {article_count} stories."""
 
     try:
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         print(f"Gemini API error: {e}")
-        return "\n---\n".join([a['title'] for a in articles[:6]])
+        return "\n---\n".join([a['title'] for a in articles])
 
 
 def format_telegram_message(articles: list[dict], summaries: str) -> str:
@@ -445,7 +552,8 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
 
     message_parts = [f"<b>AI News Digest</b> - {today}\n"]
 
-    for i, article in enumerate(articles[:6]):
+    # Process all articles (variable count based on quality ranking)
+    for i, article in enumerate(articles):
         if i < len(summary_blocks):
             summary = summary_blocks[i]
         else:
@@ -502,8 +610,8 @@ def send_digests(token: str, gemini_key: str) -> None:
         print("No articles found, skipping digest")
         return
 
-    articles = deduplicate_articles(articles)
-    print(f"After dedup: {len(articles)} unique articles")
+    articles = rank_and_filter_articles(articles)
+    print(f"After ranking: {len(articles)} quality articles")
 
     summaries = summarize_with_gemini(articles, gemini_key)
     message = format_telegram_message(articles, summaries)
