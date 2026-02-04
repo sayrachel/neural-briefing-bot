@@ -48,15 +48,19 @@ TIME_MAPPINGS = {
 # Common timezone abbreviations to IANA timezone names
 TIMEZONE_MAPPINGS = {
     # US timezones
+    "et": "America/New_York",
     "est": "America/New_York",
     "edt": "America/New_York",
     "eastern": "America/New_York",
+    "ct": "America/Chicago",
     "cst": "America/Chicago",
     "cdt": "America/Chicago",
     "central": "America/Chicago",
+    "mt": "America/Denver",
     "mst": "America/Denver",
     "mdt": "America/Denver",
     "mountain": "America/Denver",
+    "pt": "America/Los_Angeles",
     "pst": "America/Los_Angeles",
     "pdt": "America/Los_Angeles",
     "pacific": "America/Los_Angeles",
