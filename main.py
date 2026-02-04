@@ -33,6 +33,8 @@ DIVERSITY_THRESHOLD = 0.4  # Stricter threshold for final article selection (cat
 USERS_FILE = Path(__file__).parent / "users.json"
 CACHE_FILE = Path(__file__).parent / "summary_cache.json"
 CACHE_TTL = 3600  # 1 hour in seconds
+PROCESSED_UPDATES_FILE = Path(__file__).parent / "processed_updates.json"
+MAX_PROCESSED_UPDATES = 100  # Keep last 100 update IDs
 
 # Quality-based ranking configuration
 MIN_ARTICLES = 3
@@ -237,6 +239,35 @@ def save_summary_cache(articles: list[dict], summary: str) -> None:
         print("Summary cached")
     except Exception as e:
         print(f"Cache write error: {e}")
+
+
+def is_update_processed(update_id: int) -> bool:
+    """Check if an update ID has already been processed."""
+    if not PROCESSED_UPDATES_FILE.exists():
+        return False
+    try:
+        processed = json.loads(PROCESSED_UPDATES_FILE.read_text())
+        return update_id in processed.get("ids", [])
+    except (json.JSONDecodeError, KeyError):
+        return False
+
+
+def mark_update_processed(update_id: int) -> None:
+    """Mark an update ID as processed."""
+    try:
+        if PROCESSED_UPDATES_FILE.exists():
+            processed = json.loads(PROCESSED_UPDATES_FILE.read_text())
+            ids = processed.get("ids", [])
+        else:
+            ids = []
+
+        ids.append(update_id)
+        # Keep only the last N update IDs to prevent unbounded growth
+        ids = ids[-MAX_PROCESSED_UPDATES:]
+
+        PROCESSED_UPDATES_FILE.write_text(json.dumps({"ids": ids}))
+    except Exception as e:
+        print(f"Error marking update processed: {e}")
 
 
 def parse_time_preference(text: str) -> tuple[str, str, str, str]:
@@ -881,6 +912,12 @@ def webhook():
     try:
         update = request.get_json()
         if update:
+            update_id = update.get("update_id")
+            if update_id and is_update_processed(update_id):
+                print(f"Skipping already processed update: {update_id}")
+                return "OK", 200
+            if update_id:
+                mark_update_processed(update_id)
             process_webhook_update(update)
     except Exception as e:
         print(f"Webhook error: {e}")
