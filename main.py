@@ -23,10 +23,9 @@ import requests
 RSS_FEEDS = [
     ("TechCrunch", "https://techcrunch.com/category/artificial-intelligence/feed/"),
     ("The Verge", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    ("VentureBeat", "https://venturebeat.com/category/ai/feed/"),
     ("MIT Tech Review", "https://www.technologyreview.com/topic/artificial-intelligence/feed"),
     ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/technology-lab"),
-    ("Wired", "https://www.wired.com/feed/tag/ai/latest/rss"),
+    ("Karpathy", "https://karpathy.bearblog.dev/feed/"),
 ]
 
 HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
@@ -41,12 +40,11 @@ MIN_QUALITY_SCORE = 1.3  # Minimum score to include an article (filters out marg
 
 # Source reputation weights (higher = more credible/in-depth)
 SOURCE_WEIGHTS = {
+    "Karpathy": 1.5,           # High-value original content from AI thought leader
     "MIT Tech Review": 1.5,    # Deep, research-focused
     "Ars Technica": 1.3,       # Technical depth
     "The Verge": 1.0,          # Solid general coverage
-    "VentureBeat": 1.0,        # Good AI coverage
     "TechCrunch": 0.9,         # Sometimes clickbaity
-    "Wired": 0.9,              # Variable quality
 }
 
 # Keywords that indicate high-importance articles
