@@ -36,6 +36,9 @@ CACHE_TTL = 3600  # 1 hour in seconds
 PROCESSED_UPDATES_FILE = Path(__file__).parent / "processed_updates.json"
 MAX_PROCESSED_UPDATES = 100  # Keep last 100 update IDs
 
+# In-memory set for fast duplicate detection (primary)
+_processed_updates: set[int] = set()
+
 # Quality-based ranking configuration
 MIN_ARTICLES = 3
 MAX_ARTICLES = 4
@@ -243,6 +246,10 @@ def save_summary_cache(articles: list[dict], summary: str) -> None:
 
 def is_update_processed(update_id: int) -> bool:
     """Check if an update ID has already been processed."""
+    # Check in-memory set first (fast path)
+    if update_id in _processed_updates:
+        return True
+    # Fall back to file check
     if not PROCESSED_UPDATES_FILE.exists():
         return False
     try:
@@ -254,6 +261,16 @@ def is_update_processed(update_id: int) -> bool:
 
 def mark_update_processed(update_id: int) -> None:
     """Mark an update ID as processed."""
+    global _processed_updates
+
+    # Add to in-memory set immediately (fast, atomic)
+    _processed_updates.add(update_id)
+
+    # Trim in-memory set if too large
+    if len(_processed_updates) > MAX_PROCESSED_UPDATES:
+        _processed_updates = set(list(_processed_updates)[-MAX_PROCESSED_UPDATES:])
+
+    # Also persist to file (backup)
     try:
         if PROCESSED_UPDATES_FILE.exists():
             processed = json.loads(PROCESSED_UPDATES_FILE.read_text())
@@ -262,12 +279,11 @@ def mark_update_processed(update_id: int) -> None:
             ids = []
 
         ids.append(update_id)
-        # Keep only the last N update IDs to prevent unbounded growth
         ids = ids[-MAX_PROCESSED_UPDATES:]
 
         PROCESSED_UPDATES_FILE.write_text(json.dumps({"ids": ids}))
     except Exception as e:
-        print(f"Error marking update processed: {e}")
+        print(f"Error persisting update to file: {e}")
 
 
 def parse_time_preference(text: str) -> tuple[str, str, str, str]:
