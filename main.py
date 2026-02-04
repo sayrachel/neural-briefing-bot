@@ -301,15 +301,8 @@ def handle_messages(token: str) -> None:
             # New user or restart
             send_telegram_message(
                 token, chat_id,
-                "Welcome to the AI News Bot!\n\n"
-                "I'll send you a daily digest of the latest AI news from:\n"
-                "- TechCrunch\n"
-                "- The Verge\n"
-                "- VentureBeat\n"
-                "- MIT Technology Review\n"
-                "- Ars Technica\n"
-                "- Wired\n\n"
-                "What time would you like to receive your daily digest? "
+                "Welcome to the AI News Bot! I'll send you a daily summary of the top AI news.\n\n"
+                "What time would you like to receive your digest? "
                 "Please also include your timezone. If you don't specify, I'll use 9am PST."
             )
             users[chat_id] = {"state": "awaiting_time"}
@@ -331,6 +324,23 @@ def handle_messages(token: str) -> None:
             )
             users[chat_id] = {**user, "state": "awaiting_time"}
 
+        elif text == "/summary":
+            # Send summary now
+            send_telegram_message(token, chat_id, "Generating your summary...")
+            try:
+                gemini_api_key = get_env_var("GEMINI_API_KEY")
+                articles = fetch_recent_articles()
+                if articles:
+                    articles = rank_and_filter_articles(articles)
+                    summaries = summarize_with_gemini(articles, gemini_api_key)
+                    message = format_telegram_message(articles, summaries)
+                    send_telegram_message(token, chat_id, message)
+                else:
+                    send_telegram_message(token, chat_id, "No recent AI news found.")
+            except Exception as e:
+                print(f"Error generating summary: {e}")
+                send_telegram_message(token, chat_id, "Sorry, couldn't generate summary right now.")
+
         elif user.get("state") == "awaiting_time":
             time_24h, friendly_time, iana_tz, friendly_tz = parse_time_preference(text)
 
@@ -351,6 +361,7 @@ def handle_messages(token: str) -> None:
                 token, chat_id,
                 f"You'll receive your daily AI news digest at <b>{friendly_time}</b> ({friendly_tz}).\n\n"
                 "Commands:\n"
+                "/summary - Get today's summary now\n"
                 "/time - Change delivery time\n"
                 "/stop - Unsubscribe"
             )
@@ -370,6 +381,7 @@ def handle_messages(token: str) -> None:
                 token, chat_id,
                 f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
                 "Commands:\n"
+                "/summary - Get today's summary now\n"
                 "/time - Change delivery time\n"
                 "/stop - Unsubscribe"
             )
@@ -514,7 +526,7 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
         return ""
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
     # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
@@ -534,12 +546,45 @@ Articles:
 
 Write exactly {article_count} takeaways. Separate each with "---" on its own line."""
 
-    try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        print(f"Gemini API error: {e}")
-        return "\n---\n".join([a['title'] for a in articles])
+    fallback = "\n---\n".join([a['title'] for a in articles])
+
+    # Retry logic - try twice before falling back
+    for attempt in range(2):
+        try:
+            response = model.generate_content(prompt)
+
+            # Validate response
+            if not response.text:
+                print(f"Gemini returned empty response (attempt {attempt + 1})")
+                if attempt == 0:
+                    continue
+                return fallback
+
+            summary_text = response.text.strip()
+
+            # Check if response is too short (likely an error)
+            if len(summary_text) < 100:
+                print(f"Gemini response too short ({len(summary_text)} chars): {summary_text[:100]}")
+                if attempt == 0:
+                    continue
+                return fallback
+
+            # Validate we got approximately the right number of summaries
+            summary_count = summary_text.count("---") + 1
+            if summary_count < article_count:
+                print(f"Warning: Expected {article_count} summaries, got {summary_count}")
+
+            return summary_text
+
+        except Exception as e:
+            print(f"Gemini API error (attempt {attempt + 1}): {e}")
+            if attempt == 0:
+                print("Retrying...")
+                continue
+            print(f"Falling back to titles only for {len(articles)} articles")
+            return fallback
+
+    return fallback
 
 
 def format_telegram_message(articles: list[dict], summaries: str) -> str:
@@ -675,15 +720,8 @@ def process_webhook_update(update: dict) -> None:
     if text == "/start":
         send_telegram_message(
             telegram_token, chat_id,
-            "Welcome to the AI News Bot!\n\n"
-            "I'll send you a daily digest of the latest AI news from:\n"
-            "- TechCrunch\n"
-            "- The Verge\n"
-            "- VentureBeat\n"
-            "- MIT Technology Review\n"
-            "- Ars Technica\n"
-            "- Wired\n\n"
-            "What time would you like to receive your daily digest? "
+            "Welcome to the AI News Bot! I'll send you a daily summary of the top AI news.\n\n"
+            "What time would you like to receive your digest? "
             "Please also include your timezone. If you don't specify, I'll use 9am PST."
         )
         users[chat_id] = {"state": "awaiting_time"}
@@ -703,6 +741,23 @@ def process_webhook_update(update: dict) -> None:
             "Please also include your timezone. If you don't specify, I'll use 9am PST."
         )
         users[chat_id] = {**user, "state": "awaiting_time"}
+
+    elif text == "/summary":
+        # Send summary now
+        send_telegram_message(telegram_token, chat_id, "Generating your summary...")
+        try:
+            gemini_api_key = get_env_var("GEMINI_API_KEY")
+            articles = fetch_recent_articles()
+            if articles:
+                articles = rank_and_filter_articles(articles)
+                summaries = summarize_with_gemini(articles, gemini_api_key)
+                message = format_telegram_message(articles, summaries)
+                send_telegram_message(telegram_token, chat_id, message)
+            else:
+                send_telegram_message(telegram_token, chat_id, "No recent AI news found.")
+        except Exception as e:
+            print(f"Error generating summary: {e}")
+            send_telegram_message(telegram_token, chat_id, "Sorry, couldn't generate summary right now.")
 
     elif user.get("state") == "awaiting_time":
         time_24h, friendly_time, iana_tz, friendly_tz = parse_time_preference(text)
