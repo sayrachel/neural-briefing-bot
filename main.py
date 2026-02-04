@@ -31,13 +31,13 @@ RSS_FEEDS = [
 
 HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
 SIMILARITY_THRESHOLD = 0.7
-DIVERSITY_THRESHOLD = 0.5  # Stricter threshold for final article selection
+DIVERSITY_THRESHOLD = 0.4  # Stricter threshold for final article selection (catches same-story coverage)
 USERS_FILE = Path(__file__).parent / "users.json"
 
 # Quality-based ranking configuration
 MIN_ARTICLES = 3
 MAX_ARTICLES = 10
-MIN_QUALITY_SCORE = 1.0  # Minimum score to include an article
+MIN_QUALITY_SCORE = 1.3  # Minimum score to include an article (filters out marginal stories)
 
 # Source reputation weights (higher = more credible/in-depth)
 SOURCE_WEIGHTS = {
@@ -51,10 +51,11 @@ SOURCE_WEIGHTS = {
 
 # Keywords that indicate high-importance articles
 HIGH_IMPORTANCE_KEYWORDS = [
-    # Event types
-    "breakthrough", "announces", "launches", "acquisition",
-    "funding", "billion", "million", "regulation", "lawsuit",
+    # Major business events
+    "breakthrough", "announces", "launches", "acquisition", "merge", "merger",
+    "funding", "billion", "million", "regulation", "lawsuit", "antitrust",
     "open source", "safety", "partnership", "research", "paper", "study",
+    "infrastructure", "data center", "chip", "semiconductor",
     # Major AI products/companies
     "GPT", "Claude", "Gemini", "OpenAI", "Anthropic", "DeepMind", "Meta AI",
     # Influential figures
@@ -66,6 +67,7 @@ HIGH_IMPORTANCE_KEYWORDS = [
 # Keywords that indicate lower-value articles
 LOW_VALUE_KEYWORDS = [
     "rumor", "might", "could", "speculation", "opinion",
+    "podcast", "vergecast", "review",
 ]
 
 # Time mappings for natural language
@@ -424,8 +426,8 @@ def score_article(article: dict) -> float:
     source = article.get("source", "")
     score = SOURCE_WEIGHTS.get(source, 1.0)
 
-    # Combine title and summary for keyword matching
-    text = (article.get("title", "") + " " + article.get("summary", "")).lower()
+    # Combine title, summary, AND link for keyword matching
+    text = (article.get("title", "") + " " + article.get("summary", "") + " " + article.get("link", "")).lower()
 
     # Boost for high-importance keywords (each keyword adds 0.2)
     keyword_boost = 0
@@ -521,19 +523,16 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     ])
 
     article_count = len(articles)
-    prompt = f"""You are an AI news analyst writing a daily briefing. For each story, write a 2-3 sentence summary that:
+    prompt = f"""You are writing an AI news digest in the style of Chamath Palihapitiya's "What I Read This Week."
 
-1. Explains WHAT happened and WHY it matters
-2. Includes the key takeaway or implication for the industry
-3. Uses a notable quote from the article if it adds value (not required)
+For each article, write 2-3 sentences that explain the key takeaway - what happened and why it matters. Focus on business implications, power dynamics, and strategic significance. Be direct and insightful, like you're explaining to a smart friend why they should care about this.
 
-The reader should understand the significance of each story without clicking through.
+Don't use labels like "Key Takeaway:" - just write the insight directly.
 
 Articles:
 {articles_text}
 
-Format: Write each summary as a paragraph. Separate stories with "---" on its own line.
-Be substantive but concise. Summarize all {article_count} stories."""
+Write exactly {article_count} takeaways. Separate each with "---" on its own line."""
 
     try:
         response = model.generate_content(prompt)
@@ -544,25 +543,24 @@ Be substantive but concise. Summarize all {article_count} stories."""
 
 
 def format_telegram_message(articles: list[dict], summaries: str) -> str:
-    """Format the final Telegram message."""
-    today = datetime.now().strftime("%b %d, %Y")
+    """Format the final Telegram message in Chamath's 'What I Read This Week' style."""
+    today = datetime.now().strftime("%B %d, %Y")
 
     # Split summaries by --- separator
     summary_blocks = [s.strip() for s in summaries.split("---") if s.strip()]
 
-    message_parts = [f"<b>AI News Digest</b> - {today}\n"]
+    message_parts = [f"<b>Daily Neural Briefing</b>\n{today}\n"]
 
-    # Process all articles (variable count based on quality ranking)
+    # Process all articles - no numbers, just takeaway + hyperlinked source
     for i, article in enumerate(articles):
         if i < len(summary_blocks):
-            summary = summary_blocks[i]
+            takeaway = summary_blocks[i]
         else:
-            summary = article["title"]
+            takeaway = article["title"]
 
         message_parts.append(
-            f"<b>{i+1}. {article['title'][:60]}{'...' if len(article['title']) > 60 else ''}</b>\n"
-            f"{summary}\n"
-            f"<a href=\"{article['link']}\">Read more ({article['source']})</a>\n"
+            f"{takeaway}\n"
+            f"<a href=\"{article['link']}\">{article['source']}</a>\n"
         )
 
     return "\n".join(message_parts)
