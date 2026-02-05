@@ -467,24 +467,43 @@ def handle_messages(token: str) -> None:
             )
 
         elif user.get("state") == "subscribed":
-            # Already subscribed, remind them of commands
-            time_24h = user.get("time", "09:00")
-            user_tz = user.get("timezone", "America/Los_Angeles")
-            hour = int(time_24h.split(":")[0])
-            friendly = format_friendly_time(hour)
-            # Get friendly timezone name
-            tz_friendly = next(
-                (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
-                user_tz
-            )
-            send_telegram_message(
-                token, chat_id,
-                f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/time - Change delivery time\n"
-                "/stop - Unsubscribe"
-            )
+            # Check if user is trying to change their time
+            new_time_24h, new_friendly_time, new_iana_tz, new_friendly_tz = parse_time_preference(text)
+            if new_time_24h:
+                # User sent a valid time, update their subscription
+                users[chat_id] = {
+                    "state": "subscribed",
+                    "time": new_time_24h,
+                    "timezone": new_iana_tz,
+                    "subscribed_at": user.get("subscribed_at", datetime.now(timezone.utc).isoformat()),
+                }
+                send_telegram_message(
+                    token, chat_id,
+                    f"Updated! You'll receive your daily AI news digest at <b>{new_friendly_time}</b> ({new_friendly_tz}).\n\n"
+                    "Commands:\n"
+                    "/summary - Generate summary now\n"
+                    "/time - Change delivery time\n"
+                    "/stop - Unsubscribe"
+                )
+            else:
+                # Show current subscription info
+                time_24h = user.get("time", "09:00")
+                user_tz = user.get("timezone", "America/Los_Angeles")
+                hour = int(time_24h.split(":")[0])
+                friendly = format_friendly_time(hour)
+                # Get friendly timezone name
+                tz_friendly = next(
+                    (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
+                    user_tz
+                )
+                send_telegram_message(
+                    token, chat_id,
+                    f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
+                    "Commands:\n"
+                    "/summary - Generate summary now\n"
+                    "/time - Change delivery time\n"
+                    "/stop - Unsubscribe"
+                )
 
     # Mark updates as read
     if updates:
@@ -908,22 +927,42 @@ def process_webhook_update(update: dict) -> None:
         )
 
     elif user.get("state") == "subscribed":
-        time_24h = user.get("time", "09:00")
-        user_tz = user.get("timezone", "America/Los_Angeles")
-        hour = int(time_24h.split(":")[0])
-        friendly = format_friendly_time(hour)
-        tz_friendly = next(
-            (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
-            user_tz
-        )
-        send_telegram_message(
-            telegram_token, chat_id,
-            f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
-            "Commands:\n"
-            "/summary - Generate summary now\n"
-            "/time - Change delivery time\n"
-            "/stop - Unsubscribe"
-        )
+        # Check if user is trying to change their time
+        new_time_24h, new_friendly_time, new_iana_tz, new_friendly_tz = parse_time_preference(text)
+        if new_time_24h:
+            # User sent a valid time, update their subscription
+            users[chat_id] = {
+                "state": "subscribed",
+                "time": new_time_24h,
+                "timezone": new_iana_tz,
+                "subscribed_at": user.get("subscribed_at", datetime.now(timezone.utc).isoformat()),
+            }
+            send_telegram_message(
+                telegram_token, chat_id,
+                f"Updated! You'll receive your daily AI news digest at <b>{new_friendly_time}</b> ({new_friendly_tz}).\n\n"
+                "Commands:\n"
+                "/summary - Generate summary now\n"
+                "/time - Change delivery time\n"
+                "/stop - Unsubscribe"
+            )
+        else:
+            # Show current subscription info
+            time_24h = user.get("time", "09:00")
+            user_tz = user.get("timezone", "America/Los_Angeles")
+            hour = int(time_24h.split(":")[0])
+            friendly = format_friendly_time(hour)
+            tz_friendly = next(
+                (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
+                user_tz
+            )
+            send_telegram_message(
+                telegram_token, chat_id,
+                f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
+                "Commands:\n"
+                "/summary - Generate summary now\n"
+                "/time - Change delivery time\n"
+                "/stop - Unsubscribe"
+            )
 
     save_users(users)
 
