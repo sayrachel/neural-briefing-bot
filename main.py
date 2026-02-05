@@ -651,8 +651,8 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
 
     genai.configure(api_key=api_key)
 
-    # Use gemini-2.0-flash-lite (available on free tier)
-    model = genai.GenerativeModel("gemini-2.0-flash-lite")
+    # Use gemini-2.5-flash (better free tier quota than 2.0-flash-lite)
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
