@@ -794,7 +794,12 @@ def send_digests(token: str, gemini_key: str) -> None:
     articles = rank_and_filter_articles(articles)
     print(f"After ranking: {len(articles)} quality articles")
 
-    summaries = summarize_with_gemini(articles, gemini_key)
+    # Check cache first to avoid burning Gemini quota
+    summaries = get_cached_summary(articles)
+    if not summaries:
+        summaries = summarize_with_gemini(articles, gemini_key)
+        save_summary_cache(articles, summaries)
+
     message = format_telegram_message(articles, summaries)
 
     # Send to all recipients
