@@ -26,7 +26,7 @@ RSS_FEEDS = [
     ("TechCrunch", "https://techcrunch.com/category/artificial-intelligence/feed/"),
     ("The Verge", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
     ("MIT Tech Review", "https://www.technologyreview.com/topic/artificial-intelligence/feed"),
-    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/technology-lab"),
+    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/features"),  # Features feed, filter by AI keywords
 ]
 
 HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
@@ -67,6 +67,28 @@ HIGH_IMPORTANCE_KEYWORDS = [
     "Sam Altman", "Dario Amodei", "Daniela Amodei", "Demis Hassabis",
     "Yann LeCun", "Fei-Fei Li", "Jensen Huang", "Satya Nadella",
     "Sundar Pichai", "Elon Musk", "Ilya Sutskever", "Andrej Karpathy",
+]
+
+# Keywords that indicate an article is about AI/ML (used to filter non-AI content)
+AI_RELEVANCE_KEYWORDS = [
+    # Core AI/ML terms
+    "artificial intelligence", "machine learning", "deep learning", "neural network",
+    "large language model", "llm", "generative ai", "gen ai",
+    "natural language processing", "nlp", "computer vision",
+    "reinforcement learning", "transformer", "diffusion model",
+    # AI products and models
+    "chatgpt", "gpt-4", "gpt-5", "gpt", "claude", "gemini", "copilot",
+    "midjourney", "dall-e", "stable diffusion", "sora", "llama",
+    "mistral", "deepseek", "grok",
+    # AI companies (when mentioned, article is likely AI-related)
+    "openai", "anthropic", "deepmind", "hugging face", "cohere",
+    "stability ai", "inflection", "character.ai", "perplexity",
+    # AI concepts
+    "chatbot", "ai model", "ai agent", "ai safety", "ai regulation",
+    "ai chip", "ai training", "ai inference", "foundation model",
+    "multimodal", "text-to-image", "text-to-video", "speech recognition",
+    "ai-powered", "ai-generated", "machine intelligence",
+    "robot", "robotics", "autonomous",
 ]
 
 # Keywords that indicate lower-value articles
@@ -673,6 +695,26 @@ def score_article(article: dict) -> float:
     return max(score, 0)  # Don't go negative
 
 
+def is_ai_relevant(article: dict) -> bool:
+    """Check if an article is relevant to AI/ML topics.
+
+    Filters out non-AI articles that slip through from general feeds
+    (e.g., Ars Technica features feed).
+    """
+    text = (article.get("title", "") + " " + article.get("summary", "")).lower()
+
+    for keyword in AI_RELEVANCE_KEYWORDS:
+        if keyword in text:
+            return True
+
+    # Check for "AI" as a standalone uppercase word in the original text
+    original_text = article.get("title", "") + " " + article.get("summary", "")
+    if re.search(r'\bAI\b', original_text):
+        return True
+
+    return False
+
+
 def deduplicate_articles(articles: list[dict], threshold: float = SIMILARITY_THRESHOLD) -> list[dict]:
     """Remove duplicate articles based on title similarity."""
     if not articles:
@@ -702,6 +744,12 @@ def rank_and_filter_articles(articles: list[dict]) -> list[dict]:
 
     Returns 3-10 articles based on quality thresholds, ensuring diversity.
     """
+    if not articles:
+        return []
+
+    # Filter out non-AI articles (e.g., crypto, cybersecurity from general feeds)
+    articles = [a for a in articles if is_ai_relevant(a)]
+
     if not articles:
         return []
 
@@ -755,16 +803,22 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     article_count = len(articles)
     prompt = f"""You are writing a daily AI news digest in the style of Chamath Palihapitiya's "What I Read This Week."
 
-For each article, write a 4-5 sentence summary following this structure:
+For each article, write a summary that covers what matters. Use these elements as needed (not every article needs all of them):
 
-1. OPENING: State the concrete news - who did what, when. Include company/product names.
-2. CONTEXT: Explain the technical concept in simple terms using an analogy if helpful.
-3. PROBLEM: What challenge or limitation did this address?
-4. SOLUTION: How does this solve it?
-5. BOTTOM LINE: What does this mean practically - is it cheaper, faster, more powerful?
+- State the concrete news: who did what. Include company/product names.
+- Explain any technical concept in simple terms, using an analogy if helpful.
+- Why it matters: what problem does this solve, or what does it change?
+- The bottom line: is it cheaper, faster, more powerful? Who benefits?
+
+IMPORTANT guidelines on length and format:
+- Match summary length to the substance of the story. A major breakthrough deserves more detail; a straightforward product launch might need only 2-3 sentences. Do NOT pad summaries to hit a word count.
+- For longer summaries, break them into short paragraphs (2-3 sentences each) for readability. Don't write a wall of text.
+- Vary the length naturally. Not every summary should be the same size.
 
 Example of the style to match:
-"DeepSeek recently published a new AI architecture paper called Manifold-Constrained Hyper-Connections. The paper focuses on improving how information moves inside large AI models. For the last decade, all AI models have used a single, narrow 'express lane' to pass information between their internal layers. DeepSeek's new paper is a blueprint for turning that single lane into a multi-lane 'superhighway'. The result is an AI that is significantly more powerful but costs almost nothing extra to build or run."
+"DeepSeek recently published a new AI architecture paper called Manifold-Constrained Hyper-Connections. The paper focuses on improving how information moves inside large AI models.
+
+For the last decade, all AI models have used a single, narrow 'express lane' to pass information between their internal layers. DeepSeek's new paper is a blueprint for turning that single lane into a multi-lane 'superhighway'. The result is an AI that is significantly more powerful but costs almost nothing extra to build or run."
 
 Articles:
 {articles_text}
