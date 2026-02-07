@@ -814,6 +814,8 @@ IMPORTANT guidelines on length and format:
 - Match summary length to the substance of the story. A major breakthrough deserves more detail; a straightforward product launch might need only 2-3 sentences. Do NOT pad summaries to hit a word count.
 - For longer summaries, break them into short paragraphs (2-3 sentences each) for readability. Don't write a wall of text.
 - Vary the length naturally. Not every summary should be the same size.
+- Capture the full scope of the article, not just one detail. If the article covers multiple examples, companies, or developments, reflect that breadth rather than fixating on a single one.
+- Do NOT end with a generic concluding sentence that just restates the point already made. If the takeaway is clear, stop.
 
 Example of the style to match:
 "DeepSeek recently published a new AI architecture paper called Manifold-Constrained Hyper-Connections. The paper focuses on improving how information moves inside large AI models.
