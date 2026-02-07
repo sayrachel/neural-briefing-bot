@@ -753,16 +753,23 @@ def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     ])
 
     article_count = len(articles)
-    prompt = f"""You are writing an AI news digest in the style of Chamath Palihapitiya's "What I Read This Week."
+    prompt = f"""You are writing a daily AI news digest in the style of Chamath Palihapitiya's "What I Read This Week."
 
-For each article, write 2-3 sentences that explain the key takeaway - what happened and why it matters. Focus on business implications, power dynamics, and strategic significance. Be direct and insightful, like you're explaining to a smart friend why they should care about this.
+For each article, write a 4-5 sentence summary following this structure:
 
-Don't use labels like "Key Takeaway:" - just write the insight directly.
+1. OPENING: State the concrete news - who did what, when. Include company/product names.
+2. CONTEXT: Explain the technical concept in simple terms using an analogy if helpful.
+3. PROBLEM: What challenge or limitation did this address?
+4. SOLUTION: How does this solve it?
+5. BOTTOM LINE: What does this mean practically - is it cheaper, faster, more powerful?
+
+Example of the style to match:
+"DeepSeek recently published a new AI architecture paper called Manifold-Constrained Hyper-Connections. The paper focuses on improving how information moves inside large AI models. For the last decade, all AI models have used a single, narrow 'express lane' to pass information between their internal layers. DeepSeek's new paper is a blueprint for turning that single lane into a multi-lane 'superhighway'. The result is an AI that is significantly more powerful but costs almost nothing extra to build or run."
 
 Articles:
 {articles_text}
 
-Write exactly {article_count} takeaways. Separate each with "---" on its own line."""
+Write exactly {article_count} summaries. Separate each with "---" on its own line. No labels or headers - just the summary text."""
 
     fallback = "\n---\n".join([a['title'] for a in articles])
 
@@ -818,7 +825,7 @@ Write exactly {article_count} takeaways. Separate each with "---" on its own lin
 
 
 def format_telegram_message(articles: list[dict], summaries: str) -> str:
-    """Format the final Telegram message in Chamath's 'What I Read This Week' style."""
+    """Format the final Telegram message with title, summary, and source."""
     today = datetime.now().strftime("%B %d, %Y")
 
     # Split summaries by --- separator
@@ -826,14 +833,15 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
 
     message_parts = [f"<b>Daily Neural Briefing</b>\n{today}\n"]
 
-    # Process all articles - no numbers, just takeaway + hyperlinked source
+    # Process all articles - title + summary + hyperlinked source
     for i, article in enumerate(articles):
         if i < len(summary_blocks):
             takeaway = summary_blocks[i]
         else:
-            takeaway = article["title"]
+            takeaway = ""
 
         message_parts.append(
+            f"<b>{article['title']}</b>\n"
             f"{takeaway}\n"
             f"<a href=\"{article['link']}\">{article['source']}</a>\n"
         )
