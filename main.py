@@ -270,7 +270,7 @@ def handle_messages(token: str) -> None:
             users[chat_id] = {"state": "subscribed"}
             send_telegram_message(
                 token, chat_id,
-                "Welcome to the Neural Briefing Bot! You'll receive a daily AI news digest at <b>9am PT</b>.\n\n"
+                "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
                 "Commands:\n"
                 "/summary - Generate summary now\n"
                 "/stop - Unsubscribe"
@@ -701,7 +701,7 @@ def process_webhook_update(update: dict) -> None:
         users[chat_id] = {"state": "subscribed"}
         send_telegram_message(
             telegram_token, chat_id,
-            "Welcome to the Neural Briefing Bot! You'll receive a daily AI news digest at <b>9am PT</b>.\n\n"
+            "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
             "Commands:\n"
             "/summary - Generate summary now\n"
             "/stop - Unsubscribe"
