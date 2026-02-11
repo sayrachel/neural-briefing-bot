@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 AI News Telegram Bot
-- Interactive: responds to /start, asks for preferred digest time
-- Stores user preferences
-- Sends personalized daily digests
+- Sends daily AI news digests at 9am PT
+- Supports /start, /stop, /summary commands
 """
 
 import os
