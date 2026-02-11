@@ -214,7 +214,11 @@ def get_db_connection():
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         return None
-    return psycopg2.connect(database_url, cursor_factory=RealDictCursor)
+    try:
+        return psycopg2.connect(database_url, cursor_factory=RealDictCursor)
+    except Exception as e:
+        print(f"Database connection failed: {e}")
+        return None
 
 
 def init_db():
