@@ -18,8 +18,6 @@ from zoneinfo import ZoneInfo
 import feedparser
 import google.generativeai as genai
 import requests
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 # Configuration
 RSS_FEEDS = [
@@ -209,113 +207,21 @@ def get_env_var(name: str) -> str:
     return value
 
 
-def get_db_connection():
-    """Get a database connection."""
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        return None
-    try:
-        return psycopg2.connect(database_url, cursor_factory=RealDictCursor)
-    except Exception as e:
-        print(f"Database connection failed: {e}")
-        return None
-
-
-def init_db():
-    """Initialize the database tables."""
-    conn = get_db_connection()
-    if not conn:
-        print("No DATABASE_URL set, using file-based storage")
-        return
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    chat_id VARCHAR(50) PRIMARY KEY,
-                    state VARCHAR(50),
-                    time VARCHAR(10),
-                    timezone VARCHAR(100),
-                    subscribed_at TIMESTAMP
-                )
-            """)
-            conn.commit()
-        print("Database initialized")
-    except Exception as e:
-        print(f"Database init error: {e}")
-    finally:
-        conn.close()
-
-
 def load_users() -> dict:
-    """Load user preferences from database (or JSON file as fallback)."""
-    conn = get_db_connection()
-    if not conn:
-        # Fallback to file-based storage
-        if USERS_FILE.exists():
-            try:
-                return json.loads(USERS_FILE.read_text())
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users")
-            rows = cur.fetchall()
-            users = {}
-            for row in rows:
-                users[row["chat_id"]] = {
-                    "state": row["state"],
-                    "time": row["time"],
-                    "timezone": row["timezone"],
-                    "subscribed_at": row["subscribed_at"].isoformat() if row["subscribed_at"] else None,
-                }
-            return users
-    except Exception as e:
-        print(f"Database load error: {e}")
-        return {}
-    finally:
-        conn.close()
+    """Load user preferences from JSON file."""
+    if USERS_FILE.exists():
+        try:
+            return json.loads(USERS_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def save_users(users: dict) -> None:
-    """Save user preferences to database (or JSON file as fallback)."""
-    conn = get_db_connection()
-    if not conn:
-        # Fallback to file-based storage
-        USERS_FILE.write_text(json.dumps(users, indent=2))
-        return
+    """Save user preferences to JSON file."""
+    USERS_FILE.write_text(json.dumps(users, indent=2))
 
-    try:
-        with conn.cursor() as cur:
-            for chat_id, data in users.items():
-                subscribed_at = data.get("subscribed_at")
-                if subscribed_at and isinstance(subscribed_at, str):
-                    try:
-                        subscribed_at = datetime.fromisoformat(subscribed_at.replace("Z", "+00:00"))
-                    except ValueError:
-                        subscribed_at = None
 
-                cur.execute("""
-                    INSERT INTO users (chat_id, state, time, timezone, subscribed_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (chat_id) DO UPDATE SET
-                        state = EXCLUDED.state,
-                        time = EXCLUDED.time,
-                        timezone = EXCLUDED.timezone,
-                        subscribed_at = EXCLUDED.subscribed_at
-                """, (
-                    chat_id,
-                    data.get("state"),
-                    data.get("time"),
-                    data.get("timezone"),
-                    subscribed_at,
-                ))
-            conn.commit()
-    except Exception as e:
-        print(f"Database save error: {e}")
-    finally:
-        conn.close()
 
 
 def get_articles_hash(articles: list[dict]) -> str:
@@ -1005,8 +911,6 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# Initialize database on startup
-init_db()
 
 
 def process_webhook_update(update: dict) -> None:
