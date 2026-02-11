@@ -13,7 +13,6 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import feedparser
 import google.generativeai as genai
@@ -102,101 +101,6 @@ LOW_VALUE_KEYWORDS = [
     "quickly restored", "back online",
 ]
 
-# Time mappings for natural language
-TIME_MAPPINGS = {
-    "morning": "09:00",
-    "early morning": "07:00",
-    "late morning": "11:00",
-    "noon": "12:00",
-    "afternoon": "14:00",
-    "evening": "18:00",
-    "night": "21:00",
-    "midnight": "00:00",
-}
-
-# Common timezone abbreviations to IANA timezone names
-TIMEZONE_MAPPINGS = {
-    # US timezones
-    "et": "America/New_York",
-    "est": "America/New_York",
-    "edt": "America/New_York",
-    "eastern": "America/New_York",
-    "ct": "America/Chicago",
-    "cst": "America/Chicago",
-    "cdt": "America/Chicago",
-    "central": "America/Chicago",
-    "mt": "America/Denver",
-    "mst": "America/Denver",
-    "mdt": "America/Denver",
-    "mountain": "America/Denver",
-    "pt": "America/Los_Angeles",
-    "pst": "America/Los_Angeles",
-    "pdt": "America/Los_Angeles",
-    "pacific": "America/Los_Angeles",
-    "hst": "Pacific/Honolulu",
-    "akst": "America/Anchorage",
-    "akdt": "America/Anchorage",
-    # Europe
-    "gmt": "Europe/London",
-    "bst": "Europe/London",
-    "utc": "UTC",
-    "cet": "Europe/Paris",
-    "cest": "Europe/Paris",
-    "eet": "Europe/Helsinki",
-    "eest": "Europe/Helsinki",
-    # Asia
-    "ist": "Asia/Kolkata",
-    "jst": "Asia/Tokyo",
-    "kst": "Asia/Seoul",
-    "cst china": "Asia/Shanghai",
-    "sgt": "Asia/Singapore",
-    "hkt": "Asia/Hong_Kong",
-    # Australia
-    "aest": "Australia/Sydney",
-    "aedt": "Australia/Sydney",
-    "acst": "Australia/Adelaide",
-    "awst": "Australia/Perth",
-    # Other
-    "nzst": "Pacific/Auckland",
-    "nzdt": "Pacific/Auckland",
-}
-
-
-def parse_timezone(text: str) -> tuple[str, str]:
-    """
-    Parse user's timezone from input.
-    Returns (iana_timezone, friendly_name) or (None, None) if unparseable.
-    """
-    text = text.lower().strip()
-
-    # Check abbreviation mappings
-    for abbrev, tz_name in TIMEZONE_MAPPINGS.items():
-        if abbrev in text:
-            try:
-                tz = ZoneInfo(tz_name)
-                return tz_name, abbrev.upper()
-            except Exception:
-                pass
-
-    # Try as IANA timezone directly (e.g., "America/New_York")
-    # Also try common formats like "US/Pacific"
-    candidates = [
-        text,
-        text.replace(" ", "_"),
-        text.title().replace(" ", "_"),
-        f"America/{text.title().replace(' ', '_')}",
-        f"Europe/{text.title().replace(' ', '_')}",
-        f"Asia/{text.title().replace(' ', '_')}",
-    ]
-
-    for candidate in candidates:
-        try:
-            tz = ZoneInfo(candidate)
-            return candidate, candidate
-        except Exception:
-            pass
-
-    return None, None
 
 
 def get_env_var(name: str) -> str:
@@ -310,61 +214,7 @@ def mark_update_processed(update_id: int) -> None:
         print(f"Error persisting update to file: {e}")
 
 
-def parse_time_preference(text: str) -> tuple[str, str, str, str]:
-    """
-    Parse user's time preference and timezone from natural language.
-    Returns (time_24h, friendly_time, iana_timezone, friendly_tz) or (None, None, None, None) if unparseable.
-    Defaults to America/Los_Angeles (PST) if no timezone specified.
-    """
-    text_lower = text.lower().strip()
 
-    # Parse timezone from input (default to PST)
-    iana_tz, friendly_tz = parse_timezone(text_lower)
-    if not iana_tz:
-        iana_tz = "America/Los_Angeles"
-        friendly_tz = "PST"
-
-    # Check for natural language times
-    for phrase, time_24h in TIME_MAPPINGS.items():
-        if phrase in text_lower:
-            hour = int(time_24h.split(":")[0])
-            friendly = format_friendly_time(hour)
-            return time_24h, friendly, iana_tz, friendly_tz
-
-    # Check for specific times like "9am", "14:00", "9:30 pm"
-    # Pattern for "9am", "9 am", "9:00am", "9:30 pm"
-    pattern = r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?'
-    match = re.search(pattern, text_lower)
-
-    if match:
-        hour = int(match.group(1))
-        minutes = match.group(2) or "00"
-        period = match.group(3)
-
-        # Convert to 24-hour format
-        if period:
-            if period == "pm" and hour != 12:
-                hour += 12
-            elif period == "am" and hour == 12:
-                hour = 0
-
-        if 0 <= hour <= 23:
-            time_24h = f"{hour:02d}:{minutes}"
-            friendly = format_friendly_time(hour, int(minutes))
-            return time_24h, friendly, iana_tz, friendly_tz
-
-    return None, None, None, None
-
-
-def format_friendly_time(hour: int, minutes: int = 0) -> str:
-    """Format hour as friendly time string."""
-    period = "am" if hour < 12 else "pm"
-    display_hour = hour if hour <= 12 else hour - 12
-    if display_hour == 0:
-        display_hour = 12
-    if minutes:
-        return f"{display_hour}:{minutes:02d}{period}"
-    return f"{display_hour}{period}"
 
 
 def send_telegram_message(token: str, chat_id: str, message: str, parse_mode: str = "HTML") -> bool:
@@ -418,14 +268,14 @@ def handle_messages(token: str) -> None:
         user = users.get(chat_id, {"state": "new"})
 
         if text == "/start":
-            # New user or restart
+            users[chat_id] = {"state": "subscribed"}
             send_telegram_message(
                 token, chat_id,
-                "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news.\n\n"
-                "What time would you like to receive your digest? "
-                "Please also include your timezone. If you don't specify, I'll use 9am PST."
+                "Welcome to the Neural Briefing Bot! You'll receive a daily AI news digest at <b>9am PT</b>.\n\n"
+                "Commands:\n"
+                "/summary - Generate summary now\n"
+                "/stop - Unsubscribe"
             )
-            users[chat_id] = {"state": "awaiting_time"}
 
         elif text == "/stop":
             if chat_id in users:
@@ -434,15 +284,6 @@ def handle_messages(token: str) -> None:
                 token, chat_id,
                 "You've been unsubscribed. Send /start to subscribe again."
             )
-
-        elif text == "/time":
-            # Change time preference
-            send_telegram_message(
-                token, chat_id,
-                "What time would you like to receive your daily digest? "
-                "Please also include your timezone. If you don't specify, I'll use 9am PST."
-            )
-            users[chat_id] = {**user, "state": "awaiting_time"}
 
         elif text == "/summary":
             # Send summary now
@@ -465,69 +306,20 @@ def handle_messages(token: str) -> None:
                 print(f"Error generating summary: {e}")
                 send_telegram_message(token, chat_id, "Sorry, couldn't generate summary right now.")
 
-        elif user.get("state") == "awaiting_time":
-            time_24h, friendly_time, iana_tz, friendly_tz = parse_time_preference(text)
-
-            # Default to 9am PST if time couldn't be parsed
-            if not time_24h:
-                time_24h = "09:00"
-                friendly_time = "9am"
-                iana_tz = "America/Los_Angeles"
-                friendly_tz = "PST"
-
-            users[chat_id] = {
-                "state": "subscribed",
-                "time": time_24h,
-                "timezone": iana_tz,
-                "subscribed_at": datetime.now(timezone.utc).isoformat(),
-            }
+        elif user.get("state") == "subscribed":
             send_telegram_message(
                 token, chat_id,
-                f"You'll receive your daily AI news digest at <b>{friendly_time}</b> ({friendly_tz}).\n\n"
+                "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
                 "Commands:\n"
                 "/summary - Generate summary now\n"
-                "/time - Change delivery time\n"
                 "/stop - Unsubscribe"
             )
 
-        elif user.get("state") == "subscribed":
-            # Check if user is trying to change their time
-            new_time_24h, new_friendly_time, new_iana_tz, new_friendly_tz = parse_time_preference(text)
-            if new_time_24h:
-                # User sent a valid time, update their subscription
-                users[chat_id] = {
-                    "state": "subscribed",
-                    "time": new_time_24h,
-                    "timezone": new_iana_tz,
-                    "subscribed_at": user.get("subscribed_at", datetime.now(timezone.utc).isoformat()),
-                }
-                send_telegram_message(
-                    token, chat_id,
-                    f"Updated! You'll receive your daily AI news digest at <b>{new_friendly_time}</b> ({new_friendly_tz}).\n\n"
-                    "Commands:\n"
-                    "/summary - Generate summary now\n"
-                    "/time - Change delivery time\n"
-                    "/stop - Unsubscribe"
-                )
-            else:
-                # Show current subscription info
-                time_24h = user.get("time", "09:00")
-                user_tz = user.get("timezone", "America/Los_Angeles")
-                hour = int(time_24h.split(":")[0])
-                friendly = format_friendly_time(hour)
-                # Get friendly timezone name
-                tz_friendly = next(
-                    (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
-                    user_tz
-                )
-                send_telegram_message(
-                    token, chat_id,
-                    f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
-                    "Commands:\n"
-                    "/summary - Generate summary now\n"
-                    "/time - Change delivery time\n"
-                    "/stop - Unsubscribe"
-                )
+        else:
+            send_telegram_message(
+                token, chat_id,
+                "Send /start to subscribe to daily AI news digests."
+            )
 
     # Mark updates as read
     if updates:
@@ -816,35 +608,14 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
 
 
 def send_digests(token: str, gemini_key: str) -> None:
-    """Send digests to users whose scheduled time matches current hour in their timezone."""
+    """Send digests to all subscribed users."""
     users = load_users()
-    now_utc = datetime.now(timezone.utc)
 
-    # Find users who should receive digest now
-    recipients = []
-    for chat_id, data in users.items():
-        if data.get("state") != "subscribed":
-            continue
-
-        user_time = data.get("time", "09:00")
-        user_tz_name = data.get("timezone", "America/Los_Angeles")
-
-        try:
-            user_tz = ZoneInfo(user_tz_name)
-            # Get current time in user's timezone
-            now_local = now_utc.astimezone(user_tz)
-            current_hour_local = now_local.strftime("%H")
-
-            # Check if user's scheduled hour matches current hour in their timezone
-            user_hour = user_time.split(":")[0]
-            if user_hour == current_hour_local:
-                recipients.append(chat_id)
-        except Exception as e:
-            print(f"Error processing timezone for {chat_id}: {e}")
-            continue
+    recipients = [chat_id for chat_id, data in users.items()
+                  if data.get("state") == "subscribed"]
 
     if not recipients:
-        print(f"No recipients scheduled for current hour")
+        print("No subscribed users")
         return
 
     print(f"Sending digest to {len(recipients)} users...")
@@ -928,13 +699,14 @@ def process_webhook_update(update: dict) -> None:
     user = users.get(chat_id, {"state": "new"})
 
     if text == "/start":
+        users[chat_id] = {"state": "subscribed"}
         send_telegram_message(
             telegram_token, chat_id,
-            "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news.\n\n"
-            "What time would you like to receive your digest? "
-            "Please also include your timezone. If you don't specify, I'll use 9am PST."
+            "Welcome to the Neural Briefing Bot! You'll receive a daily AI news digest at <b>9am PT</b>.\n\n"
+            "Commands:\n"
+            "/summary - Generate summary now\n"
+            "/stop - Unsubscribe"
         )
-        users[chat_id] = {"state": "awaiting_time"}
 
     elif text == "/stop":
         if chat_id in users:
@@ -943,14 +715,6 @@ def process_webhook_update(update: dict) -> None:
             telegram_token, chat_id,
             "You've been unsubscribed. Send /start to subscribe again."
         )
-
-    elif text == "/time":
-        send_telegram_message(
-            telegram_token, chat_id,
-            "What time would you like to receive your daily digest? "
-            "Please also include your timezone. If you don't specify, I'll use 9am PST."
-        )
-        users[chat_id] = {**user, "state": "awaiting_time"}
 
     elif text == "/summary":
         # Send summary now
@@ -973,68 +737,20 @@ def process_webhook_update(update: dict) -> None:
             print(f"Error generating summary: {e}")
             send_telegram_message(telegram_token, chat_id, "Sorry, couldn't generate summary right now.")
 
-    elif user.get("state") == "awaiting_time":
-        time_24h, friendly_time, iana_tz, friendly_tz = parse_time_preference(text)
-
-        # Default to 9am PST if time couldn't be parsed
-        if not time_24h:
-            time_24h = "09:00"
-            friendly_time = "9am"
-            iana_tz = "America/Los_Angeles"
-            friendly_tz = "PST"
-
-        users[chat_id] = {
-            "state": "subscribed",
-            "time": time_24h,
-            "timezone": iana_tz,
-            "subscribed_at": datetime.now(timezone.utc).isoformat(),
-        }
+    elif user.get("state") == "subscribed":
         send_telegram_message(
             telegram_token, chat_id,
-            f"You'll receive your daily AI news digest at <b>{friendly_time}</b> ({friendly_tz}).\n\n"
+            "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
             "Commands:\n"
             "/summary - Generate summary now\n"
-            "/time - Change delivery time\n"
             "/stop - Unsubscribe"
         )
 
-    elif user.get("state") == "subscribed":
-        # Check if user is trying to change their time
-        new_time_24h, new_friendly_time, new_iana_tz, new_friendly_tz = parse_time_preference(text)
-        if new_time_24h:
-            # User sent a valid time, update their subscription
-            users[chat_id] = {
-                "state": "subscribed",
-                "time": new_time_24h,
-                "timezone": new_iana_tz,
-                "subscribed_at": user.get("subscribed_at", datetime.now(timezone.utc).isoformat()),
-            }
-            send_telegram_message(
-                telegram_token, chat_id,
-                f"Updated! You'll receive your daily AI news digest at <b>{new_friendly_time}</b> ({new_friendly_tz}).\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/time - Change delivery time\n"
-                "/stop - Unsubscribe"
-            )
-        else:
-            # Show current subscription info
-            time_24h = user.get("time", "09:00")
-            user_tz = user.get("timezone", "America/Los_Angeles")
-            hour = int(time_24h.split(":")[0])
-            friendly = format_friendly_time(hour)
-            tz_friendly = next(
-                (abbr.upper() for abbr, tz in TIMEZONE_MAPPINGS.items() if tz == user_tz),
-                user_tz
-            )
-            send_telegram_message(
-                telegram_token, chat_id,
-                f"You're subscribed to receive AI news at <b>{friendly}</b> ({tz_friendly}).\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/time - Change delivery time\n"
-                "/stop - Unsubscribe"
-            )
+    else:
+        send_telegram_message(
+            telegram_token, chat_id,
+            "Send /start to subscribe to daily AI news digests."
+        )
 
     save_users(users)
 
