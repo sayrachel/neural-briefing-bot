@@ -607,14 +607,19 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
 
 
 def send_digests(token: str, gemini_key: str) -> None:
-    """Send digests to all subscribed users."""
+    """Send digests to all subscribed users (at most once per day per user)."""
     users = load_users()
 
+    # Pacific Time (UTC-8); off by 1 hr during DST, acceptable since cron is hourly
+    pt = timezone(timedelta(hours=-8))
+    today = datetime.now(pt).strftime("%Y-%m-%d")
+
     recipients = [chat_id for chat_id, data in users.items()
-                  if data.get("state") == "subscribed"]
+                  if data.get("state") == "subscribed"
+                  and data.get("last_digest_date") != today]
 
     if not recipients:
-        print("No subscribed users")
+        print("No users need digest (all already received today or none subscribed)")
         return
 
     print(f"Sending digest to {len(recipients)} users...")
@@ -638,10 +643,16 @@ def send_digests(token: str, gemini_key: str) -> None:
 
     message = format_telegram_message(articles, summaries)
 
-    # Send to all recipients
+    # Send to all recipients; only mark date on success
     for chat_id in recipients:
-        send_telegram_message(token, chat_id, message)
-        print(f"Sent digest to {chat_id}")
+        try:
+            send_telegram_message(token, chat_id, message)
+            users[chat_id]["last_digest_date"] = today
+            print(f"Sent digest to {chat_id}")
+        except Exception as e:
+            print(f"Failed to send digest to {chat_id}: {e}")
+
+    save_users(users)
 
 
 def main():
@@ -653,7 +664,7 @@ def main():
     telegram_token = get_env_var("TELEGRAM_TOKEN")
     gemini_api_key = get_env_var("GEMINI_API_KEY")
 
-    last_digest_hour = None
+    last_check_hour = None
 
     while True:
         try:
@@ -662,10 +673,10 @@ def main():
 
             # Check for scheduled digests once per hour
             current_hour = datetime.now(timezone.utc).hour
-            if current_hour != last_digest_hour:
+            if current_hour != last_check_hour:
                 print(f"Checking for scheduled digests... (hour {current_hour})")
                 send_digests(telegram_token, gemini_api_key)
-                last_digest_hour = current_hour
+                last_check_hour = current_hour
 
             # Wait 5 seconds before checking again
             time.sleep(5)
@@ -779,7 +790,7 @@ def cron_digest():
         telegram_token = get_env_var("TELEGRAM_TOKEN")
         gemini_api_key = get_env_var("GEMINI_API_KEY")
         send_digests(telegram_token, gemini_api_key)
-        return "Digests sent", 200
+        return "Digest check complete", 200
     except Exception as e:
         print(f"Cron digest error: {e}")
         return f"Error: {e}", 500
