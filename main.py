@@ -598,9 +598,8 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
             takeaway = ""
 
         message_parts.append(
-            f"<b>{article['title']}</b>\n"
+            f"<b>{article['title']}</b> - <a href=\"{article['link']}\">{article['source']}</a>\n"
             f"{takeaway}\n"
-            f"<a href=\"{article['link']}\">{article['source']}</a>\n"
         )
 
     return "\n".join(message_parts)
