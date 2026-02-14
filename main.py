@@ -612,7 +612,13 @@ def send_digests(token: str, gemini_key: str) -> None:
 
     # Pacific Time (UTC-8); off by 1 hr during DST, acceptable since cron is hourly
     pt = timezone(timedelta(hours=-8))
-    today = datetime.now(pt).strftime("%Y-%m-%d")
+    now_pt = datetime.now(pt)
+    today = now_pt.strftime("%Y-%m-%d")
+
+    # Only send digests during the 9am PT hour
+    if now_pt.hour != 9:
+        print(f"Skipping digest - current PT hour is {now_pt.hour}, waiting for 9am")
+        return
 
     recipients = [chat_id for chat_id, data in users.items()
                   if data.get("state") == "subscribed"
