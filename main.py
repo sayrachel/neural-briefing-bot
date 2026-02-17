@@ -16,6 +16,7 @@ from pathlib import Path
 import feedparser
 import google.generativeai as genai
 import requests
+from flask import Flask, request
 
 # Configuration
 RSS_FEEDS = [
@@ -101,7 +102,6 @@ LOW_VALUE_KEYWORDS = [
 ]
 
 
-
 def get_env_var(name: str) -> str:
     """Get required environment variable or raise error."""
     value = os.environ.get(name)
@@ -123,8 +123,6 @@ def load_users() -> dict:
 def save_users(users: dict) -> None:
     """Save user preferences to JSON file."""
     USERS_FILE.write_text(json.dumps(users, indent=2))
-
-
 
 
 def get_articles_hash(articles: list[dict]) -> str:
@@ -188,32 +186,23 @@ def is_update_processed(update_id: int) -> bool:
 
 def mark_update_processed(update_id: int) -> None:
     """Mark an update ID as processed."""
-    global _processed_updates
-
-    # Add to in-memory set immediately (fast, atomic)
     _processed_updates.add(update_id)
 
     # Trim in-memory set if too large
-    if len(_processed_updates) > MAX_PROCESSED_UPDATES:
-        _processed_updates = set(list(_processed_updates)[-MAX_PROCESSED_UPDATES:])
+    if len(_processed_updates) > MAX_PROCESSED_UPDATES * 2:
+        excess = len(_processed_updates) - MAX_PROCESSED_UPDATES
+        for item in list(_processed_updates)[:excess]:
+            _processed_updates.discard(item)
 
-    # Also persist to file (backup)
+    # Persist to file (backup)
     try:
+        ids = []
         if PROCESSED_UPDATES_FILE.exists():
-            processed = json.loads(PROCESSED_UPDATES_FILE.read_text())
-            ids = processed.get("ids", [])
-        else:
-            ids = []
-
+            ids = json.loads(PROCESSED_UPDATES_FILE.read_text()).get("ids", [])
         ids.append(update_id)
-        ids = ids[-MAX_PROCESSED_UPDATES:]
-
-        PROCESSED_UPDATES_FILE.write_text(json.dumps({"ids": ids}))
+        PROCESSED_UPDATES_FILE.write_text(json.dumps({"ids": ids[-MAX_PROCESSED_UPDATES:]}))
     except Exception as e:
         print(f"Error persisting update to file: {e}")
-
-
-
 
 
 def send_telegram_message(token: str, chat_id: str, message: str, parse_mode: str = "HTML") -> bool:
@@ -251,76 +240,73 @@ def get_telegram_updates(token: str, offset: int = None) -> list:
         return []
 
 
+def handle_command(token: str, chat_id: str, text: str, users: dict) -> None:
+    """Handle a single command from a user."""
+    if text == "/start":
+        users[chat_id] = {"state": "subscribed"}
+        send_telegram_message(
+            token, chat_id,
+            "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
+            "Commands:\n"
+            "/summary - Generate summary now\n"
+            "/stop - Unsubscribe"
+        )
+
+    elif text == "/stop":
+        users.pop(chat_id, None)
+        send_telegram_message(
+            token, chat_id,
+            "You've been unsubscribed. Send /start to subscribe again."
+        )
+
+    elif text == "/summary":
+        send_telegram_message(token, chat_id, "Generating your summary...")
+        try:
+            gemini_api_key = get_env_var("GEMINI_API_KEY")
+            articles = fetch_recent_articles()
+            if articles:
+                articles = rank_and_filter_articles(articles)
+                summaries = get_cached_summary(articles)
+                if not summaries:
+                    summaries = summarize_with_gemini(articles, gemini_api_key)
+                    save_summary_cache(articles, summaries)
+                message = format_telegram_message(articles, summaries)
+                send_telegram_message(token, chat_id, message)
+            else:
+                send_telegram_message(token, chat_id, "No recent AI news found.")
+        except Exception as e:
+            print(f"Error generating summary: {e}")
+            send_telegram_message(token, chat_id, "Sorry, couldn't generate summary right now.")
+
+    elif users.get(chat_id, {}).get("state") == "subscribed":
+        send_telegram_message(
+            token, chat_id,
+            "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
+            "Commands:\n"
+            "/summary - Generate summary now\n"
+            "/stop - Unsubscribe"
+        )
+
+    else:
+        send_telegram_message(
+            token, chat_id,
+            "Send /start to subscribe to daily AI news digests."
+        )
+
+
 def handle_messages(token: str) -> None:
-    """Process incoming Telegram messages."""
+    """Process incoming Telegram messages (polling mode)."""
     users = load_users()
     updates = get_telegram_updates(token)
 
     for update in updates:
         if "message" not in update:
             continue
-
         message = update["message"]
         chat_id = str(message["chat"]["id"])
         text = message.get("text", "").strip()
+        handle_command(token, chat_id, text, users)
 
-        user = users.get(chat_id, {"state": "new"})
-
-        if text == "/start":
-            users[chat_id] = {"state": "subscribed"}
-            send_telegram_message(
-                token, chat_id,
-                "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/stop - Unsubscribe"
-            )
-
-        elif text == "/stop":
-            if chat_id in users:
-                del users[chat_id]
-            send_telegram_message(
-                token, chat_id,
-                "You've been unsubscribed. Send /start to subscribe again."
-            )
-
-        elif text == "/summary":
-            # Send summary now
-            send_telegram_message(token, chat_id, "Generating your summary...")
-            try:
-                gemini_api_key = get_env_var("GEMINI_API_KEY")
-                articles = fetch_recent_articles()
-                if articles:
-                    articles = rank_and_filter_articles(articles)
-                    # Check cache first
-                    summaries = get_cached_summary(articles)
-                    if not summaries:
-                        summaries = summarize_with_gemini(articles, gemini_api_key)
-                        save_summary_cache(articles, summaries)
-                    message = format_telegram_message(articles, summaries)
-                    send_telegram_message(token, chat_id, message)
-                else:
-                    send_telegram_message(token, chat_id, "No recent AI news found.")
-            except Exception as e:
-                print(f"Error generating summary: {e}")
-                send_telegram_message(token, chat_id, "Sorry, couldn't generate summary right now.")
-
-        elif user.get("state") == "subscribed":
-            send_telegram_message(
-                token, chat_id,
-                "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/stop - Unsubscribe"
-            )
-
-        else:
-            send_telegram_message(
-                token, chat_id,
-                "Send /start to subscribe to daily AI news digests."
-            )
-
-    # Mark updates as read
     if updates:
         last_update_id = updates[-1]["update_id"]
         get_telegram_updates(token, offset=last_update_id + 1)
@@ -360,127 +346,72 @@ def fetch_recent_articles(hours: int = HOURS_LOOKBACK) -> list[dict]:
 
 
 def score_article(article: dict) -> float:
-    """
-    Calculate a quality score for an article based on:
-    - Source reputation
-    - Presence of high-importance keywords
-    - Absence of low-value keywords
-
-    Returns a score where higher = more important.
-    """
-    # Base score from source reputation (default 1.0 for unknown sources)
+    """Calculate a quality score based on source reputation and keyword signals."""
     source = article.get("source", "")
     score = SOURCE_WEIGHTS.get(source, 1.0)
 
-    # Combine title, summary, AND link for keyword matching
     text = (article.get("title", "") + " " + article.get("summary", "") + " " + article.get("link", "")).lower()
 
-    # Boost for high-importance keywords (each keyword adds 0.2)
-    keyword_boost = 0
-    for keyword in HIGH_IMPORTANCE_KEYWORDS:
-        if keyword.lower() in text:
-            keyword_boost += 0.2
-    # Cap keyword boost at 1.0 to prevent runaway scores
+    # Boost for high-importance keywords (each +0.2, capped at +1.0)
+    keyword_boost = sum(0.2 for kw in HIGH_IMPORTANCE_KEYWORDS if kw.lower() in text)
     score += min(keyword_boost, 1.0)
 
-    # Penalty for low-value keywords (each reduces score by 0.3)
-    for keyword in LOW_VALUE_KEYWORDS:
-        if keyword.lower() in text:
-            score -= 0.3
+    # Penalty for low-value keywords (-0.3 each)
+    score -= sum(0.3 for kw in LOW_VALUE_KEYWORDS if kw.lower() in text)
 
     # Penalty for first-person articles (opinion/blog posts)
     title_lower = article.get("title", "").lower()
     if title_lower.startswith("i ") or " i " in title_lower[:30]:
         score -= 0.5
 
-    return max(score, 0)  # Don't go negative
+    return max(score, 0)
 
 
 def is_ai_relevant(article: dict) -> bool:
-    """Check if an article is relevant to AI/ML topics.
-
-    Filters out non-AI articles that slip through from general feeds
-    (e.g., Ars Technica features feed).
-    """
+    """Check if an article is relevant to AI/ML topics."""
     text = (article.get("title", "") + " " + article.get("summary", "")).lower()
-
-    for keyword in AI_RELEVANCE_KEYWORDS:
-        if keyword in text:
-            return True
-
+    if any(kw in text for kw in AI_RELEVANCE_KEYWORDS):
+        return True
     # Check for "AI" as a standalone uppercase word in the original text
     original_text = article.get("title", "") + " " + article.get("summary", "")
-    if re.search(r'\bAI\b', original_text):
-        return True
-
-    return False
+    return bool(re.search(r'\bAI\b', original_text))
 
 
 def deduplicate_articles(articles: list[dict], threshold: float = SIMILARITY_THRESHOLD) -> list[dict]:
     """Remove duplicate articles based on title similarity."""
-    if not articles:
-        return []
-
     unique = []
     for article in articles:
-        is_duplicate = False
-        for existing in unique:
-            similarity = SequenceMatcher(
-                None,
-                article["title"].lower(),
-                existing["title"].lower()
-            ).ratio()
-            if similarity > threshold:
-                is_duplicate = True
-                break
-        if not is_duplicate:
+        if not any(SequenceMatcher(None, article["title"].lower(), e["title"].lower()).ratio() > threshold for e in unique):
             unique.append(article)
-
     return unique
 
 
 def rank_and_filter_articles(articles: list[dict]) -> list[dict]:
-    """
-    Rank articles by quality score and filter to return only high-value articles.
-
-    Returns 3-10 articles based on quality thresholds, ensuring diversity.
-    """
+    """Rank articles by quality score and return top high-value articles."""
     if not articles:
         return []
 
-    # Filter out non-AI articles (e.g., crypto, cybersecurity from general feeds)
+    # Filter to AI-relevant articles only
     articles = [a for a in articles if is_ai_relevant(a)]
-
     if not articles:
         return []
 
-    # First pass: basic deduplication with standard threshold
+    # Deduplicate, score, and sort
     articles = deduplicate_articles(articles, SIMILARITY_THRESHOLD)
-
-    # Score all articles
     for article in articles:
         article["_score"] = score_article(article)
-
-    # Sort by score (highest first), not by recency
     articles.sort(key=lambda x: x["_score"], reverse=True)
 
-    # Filter by minimum quality threshold
+    # Filter by quality, ensuring minimum count
     quality_articles = [a for a in articles if a["_score"] >= MIN_QUALITY_SCORE]
-
-    # If we don't have enough quality articles, take top articles anyway
     if len(quality_articles) < MIN_ARTICLES:
         quality_articles = articles[:MIN_ARTICLES]
 
-    # Apply stricter diversity check to avoid similar topics in final selection
-    diverse_articles = deduplicate_articles(quality_articles, DIVERSITY_THRESHOLD)
+    # Stricter diversity check, then cap
+    final_articles = deduplicate_articles(quality_articles, DIVERSITY_THRESHOLD)[:MAX_ARTICLES]
 
-    # Cap at maximum
-    final_articles = diverse_articles[:MAX_ARTICLES]
-
-    # Clean up internal score field before returning
     for article in final_articles:
-        if "_score" in article:
-            del article["_score"]
+        article.pop("_score", None)
 
     return final_articles
 
@@ -584,24 +515,15 @@ Write exactly {article_count} summaries. Separate each with "---" on its own lin
 def format_telegram_message(articles: list[dict], summaries: str) -> str:
     """Format the final Telegram message with title, summary, and source."""
     today = datetime.now().strftime("%B %d, %Y")
-
-    # Split summaries by --- separator
     summary_blocks = [s.strip() for s in summaries.split("---") if s.strip()]
 
     message_parts = [f"<b>Daily Neural Briefing</b>\n{today}\n"]
-
-    # Process all articles - title + summary + hyperlinked source
     for i, article in enumerate(articles):
-        if i < len(summary_blocks):
-            takeaway = summary_blocks[i]
-        else:
-            takeaway = ""
-
+        takeaway = summary_blocks[i] if i < len(summary_blocks) else ""
         message_parts.append(
             f"<b>{article['title']}</b> - <a href=\"{article['link']}\">{article['source']}</a>\n"
             f"{takeaway}\n"
         )
-
     return "\n".join(message_parts)
 
 
@@ -691,82 +613,19 @@ def main():
             time.sleep(10)  # Wait a bit longer on error
 
 
-# ============ Flask Web App for Webhooks ============
-
-from flask import Flask, request
-
 app = Flask(__name__)
-
 
 
 def process_webhook_update(update: dict) -> None:
     """Process a single update from Telegram webhook."""
-    telegram_token = get_env_var("TELEGRAM_TOKEN")
-    users = load_users()
-
     if "message" not in update:
         return
-
+    telegram_token = get_env_var("TELEGRAM_TOKEN")
+    users = load_users()
     message = update["message"]
     chat_id = str(message["chat"]["id"])
     text = message.get("text", "").strip()
-
-    user = users.get(chat_id, {"state": "new"})
-
-    if text == "/start":
-        users[chat_id] = {"state": "subscribed"}
-        send_telegram_message(
-            telegram_token, chat_id,
-            "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
-            "Commands:\n"
-            "/summary - Generate summary now\n"
-            "/stop - Unsubscribe"
-        )
-
-    elif text == "/stop":
-        if chat_id in users:
-            del users[chat_id]
-        send_telegram_message(
-            telegram_token, chat_id,
-            "You've been unsubscribed. Send /start to subscribe again."
-        )
-
-    elif text == "/summary":
-        # Send summary now
-        send_telegram_message(telegram_token, chat_id, "Generating your summary...")
-        try:
-            gemini_api_key = get_env_var("GEMINI_API_KEY")
-            articles = fetch_recent_articles()
-            if articles:
-                articles = rank_and_filter_articles(articles)
-                # Check cache first
-                summaries = get_cached_summary(articles)
-                if not summaries:
-                    summaries = summarize_with_gemini(articles, gemini_api_key)
-                    save_summary_cache(articles, summaries)
-                message = format_telegram_message(articles, summaries)
-                send_telegram_message(telegram_token, chat_id, message)
-            else:
-                send_telegram_message(telegram_token, chat_id, "No recent AI news found.")
-        except Exception as e:
-            print(f"Error generating summary: {e}")
-            send_telegram_message(telegram_token, chat_id, "Sorry, couldn't generate summary right now.")
-
-    elif user.get("state") == "subscribed":
-        send_telegram_message(
-            telegram_token, chat_id,
-            "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
-            "Commands:\n"
-            "/summary - Generate summary now\n"
-            "/stop - Unsubscribe"
-        )
-
-    else:
-        send_telegram_message(
-            telegram_token, chat_id,
-            "Send /start to subscribe to daily AI news digests."
-        )
-
+    handle_command(telegram_token, chat_id, text, users)
     save_users(users)
 
 
@@ -831,13 +690,11 @@ def setup_webhook():
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) > 1 and sys.argv[1] == "setup-webhook":
-        # Run: python main.py setup-webhook
+    command = sys.argv[1] if len(sys.argv) > 1 else None
+    if command == "setup-webhook":
         setup_webhook()
-    elif len(sys.argv) > 1 and sys.argv[1] == "polling":
-        # Run: python main.py polling (for local testing)
+    elif command == "polling":
         main()
     else:
-        # Default: run Flask app (for production with gunicorn)
         port = int(os.environ.get("PORT", 5000))
         app.run(host="0.0.0.0", port=port)
