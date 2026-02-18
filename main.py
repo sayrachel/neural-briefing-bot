@@ -114,26 +114,31 @@ def get_env_var(name: str) -> str:
 def get_db_connection():
     """Get a database connection."""
     database_url = get_env_var("DATABASE_URL")
+    # Render uses postgres:// but psycopg2 requires postgresql://
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(database_url)
 
 
 def init_db():
     """Initialize the database schema."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    chat_id TEXT PRIMARY KEY,
-                    state TEXT NOT NULL DEFAULT 'subscribed',
-                    username TEXT,
-                    first_name TEXT,
-                    subscribed_at TIMESTAMPTZ DEFAULT NOW(),
-                    last_digest_date TEXT
-                )
-            """)
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
-        conn.commit()
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        chat_id TEXT PRIMARY KEY,
+                        state TEXT NOT NULL DEFAULT 'subscribed',
+                        username TEXT,
+                        first_name TEXT,
+                        subscribed_at TIMESTAMPTZ DEFAULT NOW(),
+                        last_digest_date TEXT
+                    )
+                """)
+            conn.commit()
+        print("Database initialized")
+    except Exception as e:
+        print(f"Database init error: {e}")
 
 
 def get_user(chat_id: str) -> dict | None:
