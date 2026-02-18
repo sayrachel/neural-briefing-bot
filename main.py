@@ -15,8 +15,6 @@ from pathlib import Path
 
 import feedparser
 import google.generativeai as genai
-import psycopg2
-from psycopg2.extras import RealDictCursor
 import requests
 from flask import Flask, request
 
@@ -31,6 +29,7 @@ RSS_FEEDS = [
 HOURS_LOOKBACK = 24  # Look back 24 hours for daily digest
 SIMILARITY_THRESHOLD = 0.7
 DIVERSITY_THRESHOLD = 0.4  # Stricter threshold for final article selection (catches same-story coverage)
+USERS_FILE = Path(__file__).parent / "users.json"
 CACHE_FILE = Path(__file__).parent / "summary_cache.json"
 CACHE_TTL = 3600  # 1 hour in seconds
 PROCESSED_UPDATES_FILE = Path(__file__).parent / "processed_updates.json"
@@ -111,82 +110,19 @@ def get_env_var(name: str) -> str:
     return value
 
 
-def get_db_connection():
-    """Get a database connection."""
-    database_url = get_env_var("DATABASE_URL")
-    # Render uses postgres:// but psycopg2 requires postgresql://
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(database_url)
+def load_users() -> dict:
+    """Load user preferences from JSON file."""
+    if USERS_FILE.exists():
+        try:
+            return json.loads(USERS_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
-def init_db():
-    """Initialize the database schema."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS users (
-                        chat_id TEXT PRIMARY KEY,
-                        state TEXT NOT NULL DEFAULT 'subscribed',
-                        username TEXT,
-                        first_name TEXT,
-                        subscribed_at TIMESTAMPTZ DEFAULT NOW(),
-                        last_digest_date TEXT
-                    )
-                """)
-            conn.commit()
-        print("Database initialized")
-    except Exception as e:
-        print(f"Database init error: {e}")
-
-
-def get_user(chat_id: str) -> dict | None:
-    """Get a user by chat_id."""
-    with get_db_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE chat_id = %s", (chat_id,))
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-
-def upsert_user(chat_id: str, state: str = "subscribed", username: str = None, first_name: str = None) -> None:
-    """Insert or update a user."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO users (chat_id, state, username, first_name, subscribed_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (chat_id) DO UPDATE SET state = %s, username = %s, first_name = %s
-            """, (chat_id, state, username, first_name, state, username, first_name))
-        conn.commit()
-
-
-def delete_user(chat_id: str) -> None:
-    """Delete a user."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM users WHERE chat_id = %s", (chat_id,))
-        conn.commit()
-
-
-def get_users_needing_digest(today: str) -> list[str]:
-    """Get chat_ids of subscribed users who haven't received today's digest."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT chat_id FROM users WHERE state = 'subscribed' AND (last_digest_date IS NULL OR last_digest_date != %s)",
-                (today,)
-            )
-            return [row[0] for row in cur.fetchall()]
-
-
-def update_last_digest(chat_id: str, date: str) -> None:
-    """Update the last digest date for a user."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET last_digest_date = %s WHERE chat_id = %s", (date, chat_id))
-        conn.commit()
+def save_users(users: dict) -> None:
+    """Save user preferences to JSON file."""
+    USERS_FILE.write_text(json.dumps(users, indent=2))
 
 
 def get_articles_hash(articles: list[dict]) -> str:
@@ -304,10 +240,10 @@ def get_telegram_updates(token: str, offset: int = None) -> list:
         return []
 
 
-def handle_command(token: str, chat_id: str, text: str, username: str = None, first_name: str = None) -> None:
+def handle_command(token: str, chat_id: str, text: str, users: dict) -> None:
     """Handle a single command from a user."""
     if text == "/start":
-        upsert_user(chat_id, "subscribed", username, first_name)
+        users[chat_id] = {"state": "subscribed"}
         send_telegram_message(
             token, chat_id,
             "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
@@ -317,7 +253,7 @@ def handle_command(token: str, chat_id: str, text: str, username: str = None, fi
         )
 
     elif text == "/stop":
-        delete_user(chat_id)
+        users.pop(chat_id, None)
         send_telegram_message(
             token, chat_id,
             "You've been unsubscribed. Send /start to subscribe again."
@@ -342,25 +278,25 @@ def handle_command(token: str, chat_id: str, text: str, username: str = None, fi
             print(f"Error generating summary: {e}")
             send_telegram_message(token, chat_id, "Sorry, couldn't generate summary right now.")
 
+    elif users.get(chat_id, {}).get("state") == "subscribed":
+        send_telegram_message(
+            token, chat_id,
+            "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
+            "Commands:\n"
+            "/summary - Generate summary now\n"
+            "/stop - Unsubscribe"
+        )
+
     else:
-        user = get_user(chat_id)
-        if user and user.get("state") == "subscribed":
-            send_telegram_message(
-                token, chat_id,
-                "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/stop - Unsubscribe"
-            )
-        else:
-            send_telegram_message(
-                token, chat_id,
-                "Send /start to subscribe to daily AI news digests."
-            )
+        send_telegram_message(
+            token, chat_id,
+            "Send /start to subscribe to daily AI news digests."
+        )
 
 
 def handle_messages(token: str) -> None:
     """Process incoming Telegram messages (polling mode)."""
+    users = load_users()
     updates = get_telegram_updates(token)
 
     for update in updates:
@@ -369,14 +305,13 @@ def handle_messages(token: str) -> None:
         message = update["message"]
         chat_id = str(message["chat"]["id"])
         text = message.get("text", "").strip()
-        from_user = message.get("from", {})
-        username = from_user.get("username")
-        first_name = from_user.get("first_name")
-        handle_command(token, chat_id, text, username, first_name)
+        handle_command(token, chat_id, text, users)
 
     if updates:
         last_update_id = updates[-1]["update_id"]
         get_telegram_updates(token, offset=last_update_id + 1)
+
+    save_users(users)
 
 
 def fetch_recent_articles(hours: int = HOURS_LOOKBACK) -> list[dict]:
@@ -594,6 +529,8 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
 
 def send_digests(token: str, gemini_key: str) -> None:
     """Send digests to all subscribed users (at most once per day per user)."""
+    users = load_users()
+
     # Pacific Time (UTC-8); off by 1 hr during DST, acceptable since cron is hourly
     pt = timezone(timedelta(hours=-8))
     now_pt = datetime.now(pt)
@@ -604,7 +541,9 @@ def send_digests(token: str, gemini_key: str) -> None:
         print(f"Skipping digest - current PT hour is {now_pt.hour}, waiting for 9am")
         return
 
-    recipients = get_users_needing_digest(today)
+    recipients = [chat_id for chat_id, data in users.items()
+                  if data.get("state") == "subscribed"
+                  and data.get("last_digest_date") != today]
 
     if not recipients:
         print("No users need digest (all already received today or none subscribed)")
@@ -635,10 +574,12 @@ def send_digests(token: str, gemini_key: str) -> None:
     for chat_id in recipients:
         try:
             send_telegram_message(token, chat_id, message)
-            update_last_digest(chat_id, today)
+            users[chat_id]["last_digest_date"] = today
             print(f"Sent digest to {chat_id}")
         except Exception as e:
             print(f"Failed to send digest to {chat_id}: {e}")
+
+    save_users(users)
 
 
 def main():
@@ -673,7 +614,6 @@ def main():
 
 
 app = Flask(__name__)
-init_db()
 
 
 def process_webhook_update(update: dict) -> None:
@@ -681,13 +621,12 @@ def process_webhook_update(update: dict) -> None:
     if "message" not in update:
         return
     telegram_token = get_env_var("TELEGRAM_TOKEN")
+    users = load_users()
     message = update["message"]
     chat_id = str(message["chat"]["id"])
     text = message.get("text", "").strip()
-    from_user = message.get("from", {})
-    username = from_user.get("username")
-    first_name = from_user.get("first_name")
-    handle_command(telegram_token, chat_id, text, username, first_name)
+    handle_command(telegram_token, chat_id, text, users)
+    save_users(users)
 
 
 @app.route("/webhook", methods=["POST"])
@@ -718,51 +657,6 @@ def cron_digest():
         return "Digest check complete", 200
     except Exception as e:
         print(f"Cron digest error: {e}")
-        return f"Error: {e}", 500
-
-
-@app.route("/users", methods=["GET"])
-def list_users():
-    """List all users and their subscription status."""
-    with get_db_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT chat_id, username, first_name, state, subscribed_at, last_digest_date FROM users ORDER BY subscribed_at")
-            users = [dict(row) for row in cur.fetchall()]
-    return {"total": len(users), "users": users}
-
-
-@app.route("/setup-webhook", methods=["GET", "POST"])
-def setup_webhook_endpoint():
-    """Trigger webhook setup via browser."""
-    try:
-        result = setup_webhook()
-        return f"Webhook setup: {'success' if result else 'failed (check WEBHOOK_URL)'}", 200
-    except Exception as e:
-        return f"Error: {e}", 500
-
-
-@app.route("/migrate-users", methods=["GET", "POST"])
-def migrate_users_endpoint():
-    """Migrate users from users.json to database via browser."""
-    users_file = Path(__file__).parent / "users.json"
-    if not users_file.exists():
-        return "users.json not found", 404
-    try:
-        users = json.loads(users_file.read_text())
-        count = 0
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                for chat_id, data in users.items():
-                    cur.execute("""
-                        INSERT INTO users (chat_id, state, subscribed_at, last_digest_date)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (chat_id) DO NOTHING
-                    """, (chat_id, data.get("state", "subscribed"),
-                          data.get("subscribed_at"), data.get("last_digest_date")))
-                    count += 1
-            conn.commit()
-        return f"Migrated {count} user(s) from users.json to database", 200
-    except Exception as e:
         return f"Error: {e}", 500
 
 
@@ -799,25 +693,6 @@ if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else None
     if command == "setup-webhook":
         setup_webhook()
-    elif command == "migrate-users":
-        users_file = Path(__file__).parent / "users.json"
-        if not users_file.exists():
-            print("users.json not found")
-            sys.exit(1)
-        users = json.loads(users_file.read_text())
-        count = 0
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                for chat_id, data in users.items():
-                    cur.execute("""
-                        INSERT INTO users (chat_id, state, subscribed_at, last_digest_date)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (chat_id) DO NOTHING
-                    """, (chat_id, data.get("state", "subscribed"),
-                          data.get("subscribed_at"), data.get("last_digest_date")))
-                    count += 1
-            conn.commit()
-        print(f"Migrated {count} user(s) from users.json to database")
     elif command == "polling":
         main()
     else:
