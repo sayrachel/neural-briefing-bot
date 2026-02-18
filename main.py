@@ -726,6 +726,41 @@ def list_users():
     return {"total": len(users), "users": users}
 
 
+@app.route("/setup-webhook", methods=["GET", "POST"])
+def setup_webhook_endpoint():
+    """Trigger webhook setup via browser."""
+    try:
+        result = setup_webhook()
+        return f"Webhook setup: {'success' if result else 'failed (check WEBHOOK_URL)'}", 200
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
+@app.route("/migrate-users", methods=["GET", "POST"])
+def migrate_users_endpoint():
+    """Migrate users from users.json to database via browser."""
+    users_file = Path(__file__).parent / "users.json"
+    if not users_file.exists():
+        return "users.json not found", 404
+    try:
+        users = json.loads(users_file.read_text())
+        count = 0
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for chat_id, data in users.items():
+                    cur.execute("""
+                        INSERT INTO users (chat_id, state, subscribed_at, last_digest_date)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (chat_id) DO NOTHING
+                    """, (chat_id, data.get("state", "subscribed"),
+                          data.get("subscribed_at"), data.get("last_digest_date")))
+                    count += 1
+            conn.commit()
+        return f"Migrated {count} user(s) from users.json to database", 200
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
