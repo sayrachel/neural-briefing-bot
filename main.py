@@ -706,6 +706,16 @@ def webhook():
     return "OK", 200
 
 
+@app.route("/setup-webhook", methods=["GET", "POST"])
+def setup_webhook_endpoint():
+    """Trigger webhook setup via browser."""
+    try:
+        result = setup_webhook()
+        return f"Webhook setup: {'success' if result else 'failed (check WEBHOOK_URL)'}", 200
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
 @app.route("/cron/digest", methods=["GET", "POST"])
 def cron_digest():
     """Endpoint for scheduled digest sending (called by external cron service)."""
