@@ -133,9 +133,15 @@ def _get_db_pool():
 
 @contextmanager
 def get_db():
-    """Get a database connection from the pool."""
+    """Get a database connection from the pool, handling stale connections."""
     pool = _get_db_pool()
     conn = pool.getconn()
+    try:
+        # Test if connection is still alive
+        conn.cursor().execute("SELECT 1")
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        pool.putconn(conn, close=True)
+        conn = pool.getconn()
     try:
         yield conn
         conn.commit()
@@ -698,9 +704,11 @@ def send_digests(token: str, gemini_key: str) -> None:
     # Send to all recipients; only mark date on success
     for chat_id in recipients:
         try:
-            send_telegram_message(token, chat_id, message)
-            update_last_digest(chat_id, today)
-            print(f"Sent digest to {chat_id}")
+            if send_telegram_message(token, chat_id, message):
+                update_last_digest(chat_id, today)
+                print(f"Sent digest to {chat_id}")
+            else:
+                print(f"Failed to send digest to {chat_id}, will retry next run")
         except Exception as e:
             print(f"Failed to send digest to {chat_id}: {e}")
 
