@@ -132,6 +132,8 @@ def init_db():
                         last_digest_date TEXT
                     )
                 """)
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscribed_at TIMESTAMPTZ DEFAULT NOW()")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_digest_date TEXT")
             conn.commit()
         print("Database initialized")
     except Exception as e:
