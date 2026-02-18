@@ -243,7 +243,9 @@ def get_telegram_updates(token: str, offset: int = None) -> list:
 def handle_command(token: str, chat_id: str, text: str, users: dict) -> None:
     """Handle a single command from a user."""
     if text == "/start":
-        users[chat_id] = {"state": "subscribed"}
+        existing = users.get(chat_id, {})
+        existing["state"] = "subscribed"
+        users[chat_id] = existing
         send_telegram_message(
             token, chat_id,
             "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
@@ -266,6 +268,7 @@ def handle_command(token: str, chat_id: str, text: str, users: dict) -> None:
             articles = fetch_recent_articles()
             if articles:
                 articles = rank_and_filter_articles(articles)
+            if articles:
                 summaries = get_cached_summary(articles)
                 if not summaries:
                     summaries = summarize_with_gemini(articles, gemini_api_key)
@@ -561,6 +564,10 @@ def send_digests(token: str, gemini_key: str) -> None:
 
     articles = rank_and_filter_articles(articles)
     print(f"After ranking: {len(articles)} quality articles")
+
+    if not articles:
+        print("No AI-relevant articles found after filtering, skipping digest")
+        return
 
     # Check cache first to avoid burning Gemini quota
     summaries = get_cached_summary(articles)
