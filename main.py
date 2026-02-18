@@ -8,7 +8,9 @@ AI News Telegram Bot
 import os
 import re
 import json
+import html
 import hashlib
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -16,6 +18,7 @@ from pathlib import Path
 import feedparser
 import google.generativeai as genai
 import psycopg2
+from psycopg2.pool import SimpleConnectionPool
 import requests
 from flask import Flask, request
 
@@ -101,6 +104,10 @@ LOW_VALUE_KEYWORDS = [
     "quickly restored", "back online",
 ]
 
+# Pre-lowered for efficient matching in score_article
+HIGH_IMPORTANCE_KEYWORDS_LOWER = [kw.lower() for kw in HIGH_IMPORTANCE_KEYWORDS]
+LOW_VALUE_KEYWORDS_LOWER = [kw.lower() for kw in LOW_VALUE_KEYWORDS]
+
 
 def get_env_var(name: str) -> str:
     """Get required environment variable or raise error."""
@@ -110,19 +117,39 @@ def get_env_var(name: str) -> str:
     return value
 
 
-def get_db_connection():
-    """Get a database connection."""
-    database_url = get_env_var("DATABASE_URL")
-    # Render uses postgres:// but psycopg2 requires postgresql://
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(database_url)
+_db_pool = None
+
+
+def _get_db_pool():
+    """Get or create the database connection pool."""
+    global _db_pool
+    if _db_pool is None:
+        database_url = get_env_var("DATABASE_URL")
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+        _db_pool = SimpleConnectionPool(1, 5, database_url)
+    return _db_pool
+
+
+@contextmanager
+def get_db():
+    """Get a database connection from the pool."""
+    pool = _get_db_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
 
 
 def init_db():
     """Initialize the database schema."""
     try:
-        with get_db_connection() as conn:
+        with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
@@ -134,7 +161,6 @@ def init_db():
                 """)
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscribed_at TIMESTAMPTZ DEFAULT NOW()")
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_digest_date TEXT")
-            conn.commit()
         print("Database initialized")
     except Exception as e:
         print(f"Database init error: {e}")
@@ -142,7 +168,7 @@ def init_db():
 
 def get_user(chat_id: str) -> dict | None:
     """Get a user by chat_id."""
-    with get_db_connection() as conn:
+    with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id, state, subscribed_at, last_digest_date FROM users WHERE chat_id = %s", (chat_id,))
             row = cur.fetchone()
@@ -153,27 +179,25 @@ def get_user(chat_id: str) -> dict | None:
 
 def upsert_user(chat_id: str, state: str = "subscribed") -> None:
     """Insert or update a user, preserving existing data."""
-    with get_db_connection() as conn:
+    with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO users (chat_id, state, subscribed_at)
                 VALUES (%s, %s, NOW())
                 ON CONFLICT (chat_id) DO UPDATE SET state = %s
             """, (chat_id, state, state))
-        conn.commit()
 
 
 def delete_user(chat_id: str) -> None:
     """Delete a user."""
-    with get_db_connection() as conn:
+    with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM users WHERE chat_id = %s", (chat_id,))
-        conn.commit()
 
 
 def get_users_needing_digest(today: str) -> list[str]:
     """Get chat_ids of subscribed users who haven't received today's digest."""
-    with get_db_connection() as conn:
+    with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT chat_id FROM users WHERE state = 'subscribed' AND (last_digest_date IS NULL OR last_digest_date != %s)",
@@ -184,10 +208,9 @@ def get_users_needing_digest(today: str) -> list[str]:
 
 def update_last_digest(chat_id: str, date: str) -> None:
     """Update the last digest date for a user."""
-    with get_db_connection() as conn:
+    with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET last_digest_date = %s WHERE chat_id = %s", (date, chat_id))
-        conn.commit()
 
 
 def get_articles_hash(articles: list[dict]) -> str:
@@ -271,7 +294,34 @@ def mark_update_processed(update_id: int) -> None:
 
 
 def send_telegram_message(token: str, chat_id: str, message: str, parse_mode: str = "HTML") -> bool:
-    """Send message to Telegram."""
+    """Send message to Telegram, splitting if it exceeds the 4096-char limit."""
+    MAX_LENGTH = 4096
+
+    if len(message) <= MAX_LENGTH:
+        return _send_single_message(token, chat_id, message, parse_mode)
+
+    # Split on double newlines (between articles) to keep formatting intact
+    parts = message.split("\n\n")
+    chunks = []
+    current = ""
+    for part in parts:
+        if current and len(current) + len(part) + 2 > MAX_LENGTH:
+            chunks.append(current)
+            current = part
+        else:
+            current = current + "\n\n" + part if current else part
+    if current:
+        chunks.append(current)
+
+    success = True
+    for chunk in chunks:
+        if not _send_single_message(token, chat_id, chunk, parse_mode):
+            success = False
+    return success
+
+
+def _send_single_message(token: str, chat_id: str, message: str, parse_mode: str = "HTML") -> bool:
+    """Send a single message to Telegram."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -417,11 +467,11 @@ def score_article(article: dict) -> float:
     text = (article.get("title", "") + " " + article.get("summary", "") + " " + article.get("link", "")).lower()
 
     # Boost for high-importance keywords (each +0.2, capped at +1.0)
-    keyword_boost = sum(0.2 for kw in HIGH_IMPORTANCE_KEYWORDS if kw.lower() in text)
+    keyword_boost = sum(0.2 for kw in HIGH_IMPORTANCE_KEYWORDS_LOWER if kw in text)
     score += min(keyword_boost, 1.0)
 
     # Penalty for low-value keywords (-0.3 each)
-    score -= sum(0.3 for kw in LOW_VALUE_KEYWORDS if kw.lower() in text)
+    score -= sum(0.3 for kw in LOW_VALUE_KEYWORDS_LOWER if kw in text)
 
     # Penalty for first-person articles (opinion/blog posts)
     title_lower = article.get("title", "").lower()
@@ -480,15 +530,24 @@ def rank_and_filter_articles(articles: list[dict]) -> list[dict]:
     return final_articles
 
 
+_gemini_model = None
+
+
+def _get_gemini_model(api_key: str):
+    """Get or create the Gemini model, configuring the API once."""
+    global _gemini_model
+    if _gemini_model is None:
+        genai.configure(api_key=api_key)
+        _gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+    return _gemini_model
+
+
 def summarize_with_gemini(articles: list[dict], api_key: str) -> str:
     """Use Gemini to create insightful news summaries."""
     if not articles:
         return ""
 
-    genai.configure(api_key=api_key)
-
-    # Use gemini-2.5-flash (better free tier quota than 2.0-flash-lite)
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = _get_gemini_model(api_key)
 
     # Use all provided articles (already filtered to 3-10 by rank_and_filter_articles)
     articles_text = "\n\n".join([
@@ -584,9 +643,11 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
     message_parts = [f"<b>Daily Neural Briefing</b>\n{today}\n"]
     for i, article in enumerate(articles):
         takeaway = summary_blocks[i] if i < len(summary_blocks) else ""
+        title = html.escape(article['title'])
+        source = html.escape(article['source'])
         message_parts.append(
-            f"<b>{article['title']}</b> - <a href=\"{article['link']}\">{article['source']}</a>\n"
-            f"{takeaway}\n"
+            f"<b>{title}</b> - <a href=\"{article['link']}\">{source}</a>\n"
+            f"{html.escape(takeaway)}\n"
         )
     return "\n".join(message_parts)
 
@@ -708,9 +769,19 @@ def webhook():
     return "OK", 200
 
 
+def _check_admin_token():
+    """Check if the request has a valid admin token."""
+    admin_token = os.environ.get("ADMIN_TOKEN")
+    if not admin_token:
+        return True  # No token configured, allow access
+    return request.args.get("token") == admin_token
+
+
 @app.route("/setup-webhook", methods=["GET", "POST"])
 def setup_webhook_endpoint():
     """Trigger webhook setup via browser."""
+    if not _check_admin_token():
+        return "Forbidden", 403
     try:
         result = setup_webhook()
         return f"Webhook setup: {'success' if result else 'failed (check WEBHOOK_URL)'}", 200
@@ -734,13 +805,15 @@ def cron_digest():
 @app.route("/migrate-users", methods=["GET", "POST"])
 def migrate_users_endpoint():
     """One-time migration from users.json to database."""
+    if not _check_admin_token():
+        return "Forbidden", 403
     users_file = Path(__file__).parent / "users.json"
     if not users_file.exists():
         return "users.json not found", 404
     try:
         users = json.loads(users_file.read_text())
         count = 0
-        with get_db_connection() as conn:
+        with get_db() as conn:
             with conn.cursor() as cur:
                 for chat_id, data in users.items():
                     cur.execute("""
@@ -750,7 +823,6 @@ def migrate_users_endpoint():
                     """, (chat_id, data.get("state", "subscribed"),
                           data.get("subscribed_at"), data.get("last_digest_date")))
                     count += 1
-            conn.commit()
         return f"Migrated {count} user(s) from users.json to database", 200
     except Exception as e:
         return f"Error: {e}", 500
