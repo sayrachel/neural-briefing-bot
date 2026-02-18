@@ -11,3 +11,5 @@ services:
         sync: false
       - key: WEBHOOK_URL
         sync: false
+      - key: DATABASE_URL
+        sync: false
