@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AI News Telegram Bot
-- Sends daily AI news digests at 9am PT
+- Provides on-demand AI news digests via /summary command
 - Supports /start, /stop, /summary commands
 """
 
@@ -201,23 +201,6 @@ def delete_user(chat_id: str) -> None:
             cur.execute("DELETE FROM users WHERE chat_id = %s", (chat_id,))
 
 
-def get_users_needing_digest(today: str) -> list[str]:
-    """Get chat_ids of subscribed users who haven't received today's digest."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT chat_id FROM users WHERE state = 'subscribed' AND (last_digest_date IS NULL OR last_digest_date != %s)",
-                (today,)
-            )
-            return [row[0] for row in cur.fetchall()]
-
-
-def update_last_digest(chat_id: str, date: str) -> None:
-    """Update the last digest date for a user."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET last_digest_date = %s WHERE chat_id = %s", (date, chat_id))
-
 
 def get_articles_hash(articles: list[dict]) -> str:
     """Generate a hash of article titles to use as cache key."""
@@ -345,21 +328,6 @@ def _send_single_message(token: str, chat_id: str, message: str, parse_mode: str
         return False
 
 
-def get_telegram_updates(token: str, offset: int = None) -> list:
-    """Get new messages from Telegram."""
-    url = f"https://api.telegram.org/bot{token}/getUpdates"
-    params = {"timeout": 5}
-    if offset:
-        params["offset"] = offset
-
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        return response.json().get("result", [])
-    except Exception as e:
-        print(f"Failed to get updates: {e}")
-        return []
-
 
 def handle_command(token: str, chat_id: str, text: str) -> None:
     """Handle a single command from a user."""
@@ -367,10 +335,8 @@ def handle_command(token: str, chat_id: str, text: str) -> None:
         upsert_user(chat_id, "subscribed")
         send_telegram_message(
             token, chat_id,
-            "Welcome to the Neural Briefing Bot! I'll send you a daily summary of the top AI news at 9am PT daily.\n\n"
-            "Commands:\n"
-            "/summary - Generate summary now\n"
-            "/stop - Unsubscribe"
+            "Welcome to the AI News Bot! I'll send you a digest of the latest AI news whenever you use the command /summary. "
+            "If you want to unsubscribe, use the command /stop"
         )
 
     elif text == "/stop":
@@ -405,33 +371,15 @@ def handle_command(token: str, chat_id: str, text: str) -> None:
         if user and user.get("state") == "subscribed":
             send_telegram_message(
                 token, chat_id,
-                "You're subscribed to receive AI news daily at <b>9am PT</b>.\n\n"
-                "Commands:\n"
-                "/summary - Generate summary now\n"
-                "/stop - Unsubscribe"
+                "Use /summary to get the latest AI news digest.\n"
+                "Use /stop to unsubscribe."
             )
         else:
             send_telegram_message(
                 token, chat_id,
-                "Send /start to subscribe to daily AI news digests."
+                "Send /start to subscribe to the AI News Bot."
             )
 
-
-def handle_messages(token: str) -> None:
-    """Process incoming Telegram messages (polling mode)."""
-    updates = get_telegram_updates(token)
-
-    for update in updates:
-        if "message" not in update:
-            continue
-        message = update["message"]
-        chat_id = str(message["chat"]["id"])
-        text = message.get("text", "").strip()
-        handle_command(token, chat_id, text)
-
-    if updates:
-        last_update_id = updates[-1]["update_id"]
-        get_telegram_updates(token, offset=last_update_id + 1)
 
 
 def fetch_recent_articles(hours: int = HOURS_LOOKBACK) -> list[dict]:
@@ -658,90 +606,6 @@ def format_telegram_message(articles: list[dict], summaries: str) -> str:
     return "\n".join(message_parts)
 
 
-def send_digests(token: str, gemini_key: str) -> None:
-    """Send digests to all subscribed users (at most once per day per user)."""
-    # Pacific Time (UTC-8); off by 1 hr during DST, acceptable since cron is hourly
-    pt = timezone(timedelta(hours=-8))
-    now_pt = datetime.now(pt)
-    today = now_pt.strftime("%Y-%m-%d")
-
-    # Only send digests during the 9am PT hour
-    if now_pt.hour != 9:
-        print(f"Skipping digest - current PT hour is {now_pt.hour}, waiting for 9am")
-        return
-
-    recipients = get_users_needing_digest(today)
-
-    if not recipients:
-        print("No users need digest (all already received today or none subscribed)")
-        return
-
-    print(f"Sending digest to {len(recipients)} users...")
-
-    # Fetch and prepare news
-    articles = fetch_recent_articles()
-    print(f"Found {len(articles)} articles")
-
-    if not articles:
-        print("No articles found, skipping digest")
-        return
-
-    articles = rank_and_filter_articles(articles)
-    print(f"After ranking: {len(articles)} quality articles")
-
-    if not articles:
-        print("No AI-relevant articles found after filtering, skipping digest")
-        return
-
-    # Check cache first to avoid burning Gemini quota
-    summaries = get_cached_summary(articles)
-    if not summaries:
-        summaries = summarize_with_gemini(articles, gemini_key)
-        save_summary_cache(articles, summaries)
-
-    message = format_telegram_message(articles, summaries)
-
-    # Send to all recipients; only mark date on success
-    for chat_id in recipients:
-        try:
-            if send_telegram_message(token, chat_id, message):
-                update_last_digest(chat_id, today)
-                print(f"Sent digest to {chat_id}")
-            else:
-                print(f"Failed to send digest to {chat_id}, will retry next run")
-        except Exception as e:
-            print(f"Failed to send digest to {chat_id}: {e}")
-
-
-def main():
-    """Main bot execution - runs continuously."""
-    import time
-
-    print(f"AI News Bot starting - {datetime.now(timezone.utc).isoformat()}")
-
-    telegram_token = get_env_var("TELEGRAM_TOKEN")
-    gemini_api_key = get_env_var("GEMINI_API_KEY")
-
-    last_check_hour = None
-
-    while True:
-        try:
-            # Check for new messages every loop (responds immediately)
-            handle_messages(telegram_token)
-
-            # Check for scheduled digests once per hour
-            current_hour = datetime.now(timezone.utc).hour
-            if current_hour != last_check_hour:
-                print(f"Checking for scheduled digests... (hour {current_hour})")
-                send_digests(telegram_token, gemini_api_key)
-                last_check_hour = current_hour
-
-            # Wait 5 seconds before checking again
-            time.sleep(5)
-
-        except Exception as e:
-            print(f"Error in main loop: {e}")
-            time.sleep(10)  # Wait a bit longer on error
 
 
 app = Flask(__name__)
@@ -796,18 +660,6 @@ def setup_webhook_endpoint():
     except Exception as e:
         return f"Error: {e}", 500
 
-
-@app.route("/cron/digest", methods=["GET", "POST"])
-def cron_digest():
-    """Endpoint for scheduled digest sending (called by external cron service)."""
-    try:
-        telegram_token = get_env_var("TELEGRAM_TOKEN")
-        gemini_api_key = get_env_var("GEMINI_API_KEY")
-        send_digests(telegram_token, gemini_api_key)
-        return "Digest check complete", 200
-    except Exception as e:
-        print(f"Cron digest error: {e}")
-        return f"Error: {e}", 500
 
 
 @app.route("/migrate-users", methods=["GET", "POST"])
@@ -869,8 +721,6 @@ if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else None
     if command == "setup-webhook":
         setup_webhook()
-    elif command == "polling":
-        main()
     else:
         port = int(os.environ.get("PORT", 5000))
         app.run(host="0.0.0.0", port=port)
