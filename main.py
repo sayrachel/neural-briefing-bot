@@ -335,8 +335,7 @@ def handle_command(token: str, chat_id: str, text: str) -> None:
         upsert_user(chat_id, "subscribed")
         send_telegram_message(
             token, chat_id,
-            "Welcome to the AI News Bot! I'll send you a digest of the latest AI news whenever you use the command /summary. "
-            "If you want to unsubscribe, use the command /stop"
+            "Welcome to the AI News Bot! I'll send you a digest of the latest AI news whenever you use the command /summary."
         )
 
     elif text == "/stop":
